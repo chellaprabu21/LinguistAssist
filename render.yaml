@@ -1,0 +1,18 @@
+services:
+  - type: web
+    name: linguist-assist-api
+    env: python
+    buildCommand: pip install -r requirements-cloud.txt
+    startCommand: python3 linguist_assist_api_cloud.py --host 0.0.0.0 --port $PORT
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.12.0
+      - key: FLASK_ENV
+        value: production
+      # Set your API keys here (comma-separated)
+      # - key: API_KEYS
+      #   value: your-api-key-here,another-key-here
+      - key: DATABASE_URL
+        value: sqlite:///linguist_assist.db
+      - key: RATE_LIMIT_RPM
+        value: 60

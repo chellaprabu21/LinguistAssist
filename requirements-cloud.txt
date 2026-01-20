@@ -1,0 +1,10 @@
+# Requirements for cloud deployment
+# Minimal dependencies for API server only
+
+flask>=2.3.0
+flask-cors>=4.0.0
+gunicorn>=21.2.0
+
+# Optional: For database support
+# sqlite3 is included with Python, but if you want PostgreSQL:
+# psycopg2-binary>=2.9.0
