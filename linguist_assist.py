@@ -107,6 +107,8 @@ class LinguistAssist:
         "Actions can be: 'click' (click on an element), 'type' (type text into a field), 'press_key' (press a keyboard key like Enter, Tab, Escape). "
         "Return JSON format: {'complete': true/false, 'action_type': 'click'|'type'|'press_key', 'action': 'description of what you're doing', 'point': [y, x] if click/type needs coordinates, 'text': 'text to type' if type action, 'key': 'key name' if press_key}. "
         "If complete is true, other fields can be omitted. The coordinates must be normalized to a 0-1000 scale. "
+        "IMPORTANT: Set 'complete': true if the goal is achieved. For 'open app' goals, if you see the app window open or the app is visible on screen, the goal is complete. "
+        "If you've clicked the same element multiple times without progress, consider if the goal might already be achieved. "
         "IMPORTANT: Break down complex tasks into individual steps. For 'send message to X': "
         "(1) First step: click on the contact in the DM list (ONLY if their conversation is not already open), "
         "(2) Second step: verify the conversation is open (check if you see their name in the header), "
@@ -452,6 +454,7 @@ class LinguistAssist:
         action_history = []
         recent_actions = []  # Track recent actions to detect loops
         recent_coordinates = []  # Track recent coordinates to detect loops
+        loop_count = 0  # Track consecutive loop detections
         
         while step_count < max_steps:
             try:
@@ -463,8 +466,32 @@ class LinguistAssist:
                 print(f"\n[LinguistAssist] Step {step_count}: Analyzing screen...")
                 print(f"[LinguistAssist] Screenshot dimensions: {screenshot_width}x{screenshot_height}")
                 
-                # Use planning model to determine next action
-                planning_prompt = f"Goal: {goal}\n\nAction history so far: {', '.join(action_history) if action_history else 'None'}\n\nAnalyze the current screen state and determine the next action."
+                # Build planning prompt with loop awareness
+                planning_prompt = f"Goal: {goal}\n\n"
+                
+                if action_history:
+                    planning_prompt += f"Action history so far: {', '.join(action_history[-5:])}\n\n"
+                
+                # Add loop detection warning to prompt
+                if len(recent_actions) >= 3:
+                    last_three = recent_actions[-3:]
+                    if len(set([a.lower() for a in last_three])) <= 1:  # All same action
+                        planning_prompt += "⚠️ WARNING: The same action has been repeated multiple times. "
+                        planning_prompt += "Please carefully check if the goal is already achieved. "
+                        planning_prompt += "If the app is already open or the task is complete, set 'complete': true. "
+                        planning_prompt += "If not, try a different approach or action.\n\n"
+                        loop_count += 1
+                    else:
+                        loop_count = 0  # Reset if actions differ
+                
+                # If stuck in loop for too long, ask Gemini to reconsider completion
+                if loop_count >= 3:
+                    planning_prompt += "⚠️ CRITICAL: Multiple repeated actions detected. "
+                    planning_prompt += f"Please verify if the goal '{goal}' is actually complete. "
+                    planning_prompt += "Look for visual indicators that the task succeeded (e.g., app window open, button clicked, etc.). "
+                    planning_prompt += "If the goal appears achieved, set 'complete': true immediately.\n\n"
+                
+                planning_prompt += "Analyze the current screen state and determine the next action."
                 
                 response = self.planning_model.generate_content([
                     planning_prompt,
@@ -572,6 +599,13 @@ class LinguistAssist:
                 if plan_data.get("complete", False):
                     print(f"\n[LinguistAssist] ✓ Goal achieved! Completed in {step_count} steps.")
                     return True
+                
+                # If we've been in a loop for too long and Gemini still says not complete, 
+                # but keeps suggesting the same action, fail gracefully
+                if loop_count >= 4:
+                    print(f"\n[LinguistAssist] Error: Stuck in loop for {loop_count} steps. Task may be impossible or already complete.")
+                    print(f"[LinguistAssist] Recent actions: {recent_actions[-5:]}")
+                    return False
                 
                 # Get action type and details
                 action_type = plan_data.get("action_type", "click")  # Default to click for backward compatibility
@@ -708,6 +742,15 @@ class LinguistAssist:
                             if len(recent_actions) >= 2 and action.lower() in [a.lower() for a in recent_actions[-2:]]:
                                 print(f"[LinguistAssist] Warning: Detected potential loop - same action repeated")
                                 print(f"[LinguistAssist] Recent actions: {recent_actions[-3:]}")
+                                
+                                # If we've repeated the same action 3+ times, fail faster
+                                if len(recent_actions) >= 3:
+                                    last_three_actions = [a.lower() for a in recent_actions[-3:]]
+                                    if len(set(last_three_actions)) == 1:  # All identical
+                                        print(f"[LinguistAssist] Error: Stuck in loop - same action repeated 3+ times")
+                                        print(f"[LinguistAssist] Failing task to prevent infinite loop")
+                                        return False
+                                
                                 # Try a slightly different coordinate or wait longer
                                 if is_repeat:
                                     print(f"[LinguistAssist] Coordinates are very similar to recent clicks. Waiting longer and trying again...")
