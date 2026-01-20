@@ -1,0 +1,50 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.jumpcloud.linguistassist</string>
+    
+    <key>ProgramArguments</key>
+    <array>
+        <string>/Library/Frameworks/Python.framework/Versions/3.12/bin/python3</string>
+        <string>/Users/cv/Repo/LinguistAssist/linguist_assist_service.py</string>
+        <string>--model</string>
+        <string>gemini-1.5-flash</string>
+    </array>
+    
+    <key>RunAtLoad</key>
+    <true/>
+    
+    <key>KeepAlive</key>
+    <true/>
+    
+    <key>StandardOutPath</key>
+    <string>/Users/cv/.linguist_assist/service.log</string>
+    
+    <key>StandardErrorPath</key>
+    <string>/Users/cv/.linguist_assist/service_error.log</string>
+    
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/Library/Frameworks/Python.framework/Versions/3.12/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+        <key>PYTHONPATH</key>
+        <string>/Users/cv/Repo/LinguistAssist</string>
+        <key>HOME</key>
+        <string>/Users/cv</string>
+    </dict>
+    
+    <key>WorkingDirectory</key>
+    <string>/Users/cv/Repo/LinguistAssist</string>
+    
+    <key>ProcessType</key>
+    <string>Interactive</string>
+    
+    <key>LimitLoadToSessionType</key>
+    <string>Aqua</string>
+    
+    <key>ThrottleInterval</key>
+    <integer>10</integer>
+</dict>
+</plist>
