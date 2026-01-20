@@ -14,7 +14,9 @@ import time
 
 # API Configuration
 API_CONFIG_FILE = Path.home() / ".linguist_assist" / "api_config.json"
+CLOUD_CONFIG_FILE = Path.home() / ".linguist_assist" / "cloud_config.json"
 DEFAULT_API_URL = "http://localhost:8080"
+CLOUD_API_URL = "https://linguist-assist.vercel.app"
 
 
 class LinguistAssistGUI:
@@ -25,9 +27,8 @@ class LinguistAssistGUI:
         self.root.title("LinguistAssist")
         self.root.geometry("900x700")
         
-        # Load API configuration
-        self.api_url = DEFAULT_API_URL
-        self.api_key = self.load_api_key()
+        # Load API configuration (prefer cloud config if available)
+        self.api_url, self.api_key = self.load_api_config()
         
         # Task polling
         self.polling = False
@@ -36,18 +37,34 @@ class LinguistAssistGUI:
         self.setup_ui()
         self.check_api_health()
     
-    def load_api_key(self):
-        """Load API key from config file."""
+    def load_api_config(self):
+        """Load API URL and key from config files (prefer cloud config)."""
+        # First, try cloud config
+        try:
+            if CLOUD_CONFIG_FILE.exists():
+                with open(CLOUD_CONFIG_FILE, 'r') as f:
+                    cloud_config = json.load(f)
+                    api_url = cloud_config.get("api_url", CLOUD_API_URL)
+                    api_key = cloud_config.get("api_key")
+                    if api_key:
+                        return api_url, api_key
+        except Exception as e:
+            print(f"Error loading cloud config: {e}")
+        
+        # Fall back to local config
+        api_url = DEFAULT_API_URL
+        api_key = None
         try:
             if API_CONFIG_FILE.exists():
                 with open(API_CONFIG_FILE, 'r') as f:
                     config = json.load(f)
                     api_keys = config.get("api_keys", [])
                     if api_keys:
-                        return api_keys[0]
+                        api_key = api_keys[0]
         except Exception as e:
             print(f"Error loading API key: {e}")
-        return None
+        
+        return api_url, api_key
     
     def setup_ui(self):
         """Setup the user interface."""

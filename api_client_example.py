@@ -145,15 +145,34 @@ def main():
     parser = argparse.ArgumentParser(
         description="LinguistAssist API Client Example"
     )
+    # Check for cloud config or environment variables
+    import os
+    from pathlib import Path
+    
+    cloud_config_file = Path.home() / ".linguist_assist" / "cloud_config.json"
+    default_url = os.getenv("LINGUIST_ASSIST_API_URL", "http://localhost:8080")
+    default_api_key = os.getenv("LINGUIST_ASSIST_API_KEY")
+    
+    # Try to load from cloud config
+    if cloud_config_file.exists():
+        try:
+            import json
+            with open(cloud_config_file, 'r') as f:
+                cloud_config = json.load(f)
+                default_url = cloud_config.get("api_url", default_url)
+                default_api_key = cloud_config.get("api_key", default_api_key)
+        except Exception:
+            pass
+    
     parser.add_argument(
         "--url",
-        default="http://localhost:8080",
-        help="API server URL (default: http://localhost:8080)"
+        default=default_url,
+        help=f"API server URL (default: {default_url})"
     )
     parser.add_argument(
         "--api-key",
-        required=True,
-        help="API key"
+        default=default_api_key,
+        help="API key (can also be set via LINGUIST_ASSIST_API_KEY env var or cloud_config.json)"
     )
     parser.add_argument(
         "goal",
@@ -186,6 +205,9 @@ def main():
     )
     
     args = parser.parse_args()
+    
+    if not args.api_key:
+        parser.error("API key is required. Set --api-key, LINGUIST_ASSIST_API_KEY env var, or configure cloud_config.json")
     
     client = LinguistAssistAPIClient(args.url, args.api_key)
     
