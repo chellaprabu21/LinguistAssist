@@ -31,13 +31,18 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Task queue directory
+# Task queue directory (for fallback/local mode)
 QUEUE_DIR = LOG_DIR / "queue"
 QUEUE_DIR.mkdir(exist_ok=True)
 PROCESSING_DIR = LOG_DIR / "processing"
 PROCESSING_DIR.mkdir(exist_ok=True)
 COMPLETED_DIR = LOG_DIR / "completed"
 COMPLETED_DIR.mkdir(exist_ok=True)
+
+# Cloud API configuration
+CLOUD_CONFIG_FILE = LOG_DIR / "cloud_config.json"
+DEFAULT_API_URL = "http://localhost:8080"
+CLOUD_API_URL = "https://linguist-assist.vercel.app"
 
 # Service control
 running = True
@@ -53,7 +58,7 @@ def signal_handler(signum, frame):
 class LinguistAssistService:
     """Service daemon for LinguistAssist."""
     
-    def __init__(self, model_name: str = "gemini-1.5-flash", poll_interval: float = 1.0):
+    def __init__(self, model_name: str = "gemini-1.5-flash", poll_interval: float = 5.0):
         """
         Initialize the service.
         
@@ -64,7 +69,38 @@ class LinguistAssistService:
         self.model_name = model_name
         self.poll_interval = poll_interval
         self.agent = None
+        self.api_url, self.api_key = self.load_cloud_config()
         logger.info(f"Initializing LinguistAssist service with model: {model_name}")
+        logger.info(f"Cloud API URL: {self.api_url}")
+    
+    def load_cloud_config(self):
+        """Load cloud API configuration."""
+        # Try cloud config first
+        try:
+            if CLOUD_CONFIG_FILE.exists():
+                with open(CLOUD_CONFIG_FILE, 'r') as f:
+                    cloud_config = json.load(f)
+                    api_url = cloud_config.get("api_url", CLOUD_API_URL)
+                    api_key = cloud_config.get("api_key")
+                    if api_key:
+                        return api_url, api_key
+        except Exception as e:
+            logger.warning(f"Error loading cloud config: {e}")
+        
+        # Fall back to local config
+        try:
+            api_config_file = LOG_DIR / "api_config.json"
+            if api_config_file.exists():
+                with open(api_config_file, 'r') as f:
+                    config = json.load(f)
+                    api_keys = config.get("api_keys", [])
+                    if api_keys:
+                        return DEFAULT_API_URL, api_keys[0]
+        except Exception as e:
+            logger.warning(f"Error loading local config: {e}")
+        
+        logger.error("No API configuration found! Service will not be able to fetch tasks.")
+        return None, None
         
     def ensure_screenshot_service(self):
         """Ensure screenshot service is running."""
@@ -130,8 +166,59 @@ class LinguistAssistService:
             logger.error(f"Failed to initialize agent: {e}")
             return False
     
+    def fetch_queued_tasks(self) -> list:
+        """Fetch queued tasks from cloud API."""
+        if not self.api_url or not self.api_key:
+            return []
+        
+        try:
+            headers = {
+                "X-API-Key": self.api_key,
+                "Content-Type": "application/json"
+            }
+            response = requests.get(
+                f"{self.api_url}/api/v1/tasks?status=queued",
+                headers=headers,
+                timeout=10
+            )
+            response.raise_for_status()
+            data = response.json()
+            return data.get("tasks", [])
+        except requests.exceptions.RequestException as e:
+            logger.error(f"Failed to fetch tasks from API: {e}")
+            return []
+    
+    def update_task_status(self, task_id: str, status: str, result: Optional[Dict] = None):
+        """Update task status in cloud API."""
+        if not self.api_url or not self.api_key:
+            logger.warning(f"Cannot update task {task_id} status - no API configuration")
+            return False
+        
+        try:
+            headers = {
+                "X-API-Key": self.api_key,
+                "Content-Type": "application/json"
+            }
+            data = {
+                "status": status
+            }
+            if result:
+                data["result"] = result
+            
+            response = requests.put(
+                f"{self.api_url}/api/v1/tasks/{task_id}/result",
+                json=data,
+                headers=headers,
+                timeout=10
+            )
+            response.raise_for_status()
+            return True
+        except requests.exceptions.RequestException as e:
+            logger.error(f"Failed to update task {task_id} status: {e}")
+            return False
+    
     def load_task(self, task_file: Path) -> Optional[Dict]:
-        """Load a task from a JSON file."""
+        """Load a task from a JSON file (for local fallback)."""
         try:
             with open(task_file, 'r') as f:
                 task = json.load(f)
@@ -158,45 +245,29 @@ class LinguistAssistService:
         except Exception as e:
             logger.error(f"Failed to save task result: {e}")
     
-    def process_task(self, task_file: Path) -> bool:
+    def process_task(self, task: Dict) -> bool:
         """
-        Process a single task file.
+        Process a single task from cloud API.
+        
+        Args:
+            task: Task dictionary from API
         
         Returns:
             True if task was processed successfully, False otherwise
         """
-        logger.info(f"Processing task: {task_file.name}")
-        
-        # Load task
-        task = self.load_task(task_file)
-        if not task:
-            # Move to processing with error status
-            try:
-                task_file.rename(PROCESSING_DIR / f"{task_file.stem}_error.json")
-            except:
-                pass
-            return False
-        
+        task_id = task.get("id", "unknown")
         goal = task.get("goal", "")
         max_steps = task.get("max_steps", 20)
-        task_id = task.get("id", task_file.stem)
+        
+        logger.info(f"Processing task: {task_id} - {goal}")
         
         if not goal:
-            logger.error(f"Task {task_file.name} has no goal specified")
-            self.save_task_result(
-                task_file,
-                {"id": task_id, "status": "error", "error": "No goal specified"},
-                "processing"
-            )
+            logger.error(f"Task {task_id} has no goal specified")
+            self.update_task_status(task_id, "error", {"error": "No goal specified"})
             return False
         
-        # Move task to processing directory
-        try:
-            processing_file = PROCESSING_DIR / task_file.name
-            task_file.rename(processing_file)
-            task_file = processing_file
-        except Exception as e:
-            logger.warning(f"Could not move task to processing: {e}")
+        # Update status to processing
+        self.update_task_status(task_id, "processing")
         
         # Execute task
         try:
@@ -208,10 +279,12 @@ class LinguistAssistService:
                 "goal": goal,
                 "status": "completed" if success else "failed",
                 "max_steps": max_steps,
+                "success": success,
                 "timestamp": time.time()
             }
             
-            self.save_task_result(task_file, result, "completed")
+            # Update task status in cloud API
+            self.update_task_status(task_id, "completed" if success else "failed", result)
             logger.info(f"Task {task_id} completed: {success}")
             return True
             
@@ -224,7 +297,7 @@ class LinguistAssistService:
                 "error": str(e),
                 "timestamp": time.time()
             }
-            self.save_task_result(task_file, result, "processing")
+            self.update_task_status(task_id, "error", result)
             return False
     
     def run(self):
@@ -241,22 +314,45 @@ class LinguistAssistService:
             return 1
         
         logger.info("LinguistAssist service started")
-        logger.info(f"Monitoring task queue: {QUEUE_DIR}")
+        if self.api_url:
+            logger.info(f"Polling cloud API: {self.api_url}")
+        else:
+            logger.warning("No API configuration - falling back to local file queue")
+            logger.info(f"Monitoring local task queue: {QUEUE_DIR}")
         logger.info(f"Poll interval: {self.poll_interval} seconds")
         
         # Main loop
         while running:
             try:
-                # Check for new tasks
-                task_files = list(QUEUE_DIR.glob("*.json"))
-                
-                if task_files:
-                    # Process tasks one at a time
-                    task_file = task_files[0]
-                    self.process_task(task_file)
+                if self.api_url and self.api_key:
+                    # Poll cloud API for queued tasks
+                    tasks = self.fetch_queued_tasks()
+                    
+                    if tasks:
+                        # Process tasks one at a time
+                        task = tasks[0]
+                        self.process_task(task)
+                    else:
+                        # No tasks, sleep
+                        time.sleep(self.poll_interval)
                 else:
-                    # No tasks, sleep
-                    time.sleep(self.poll_interval)
+                    # Fallback to local file queue
+                    task_files = list(QUEUE_DIR.glob("*.json"))
+                    
+                    if task_files:
+                        # Process tasks one at a time
+                        task_file = task_files[0]
+                        task = self.load_task(task_file)
+                        if task:
+                            self.process_task(task)
+                            # Remove processed file
+                            try:
+                                task_file.unlink()
+                            except:
+                                pass
+                    else:
+                        # No tasks, sleep
+                        time.sleep(self.poll_interval)
                     
             except KeyboardInterrupt:
                 logger.info("Interrupted by user")
@@ -286,8 +382,8 @@ def main():
     parser.add_argument(
         "--poll-interval",
         type=float,
-        default=1.0,
-        help="How often to check for new tasks in seconds (default: 1.0)"
+        default=5.0,
+        help="How often to check for new tasks in seconds (default: 5.0)"
     )
     
     args = parser.parse_args()
