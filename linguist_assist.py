@@ -28,6 +28,7 @@ class CoordinateMapper:
     def __init__(self):
         """Initialize with current screen resolution."""
         self.screen_width, self.screen_height = pyautogui.size()
+        print(f"[CoordinateMapper] Screen resolution: {self.screen_width}x{self.screen_height}")
     
     def normalize_to_pixels(self, normalized_y: float, normalized_x: float) -> Tuple[int, int]:
         """
@@ -40,6 +41,15 @@ class CoordinateMapper:
         Returns:
             Tuple of (pixel_x, pixel_y) coordinates
         """
+        # Validate normalized coordinates
+        if not (0 <= normalized_x <= 1000):
+            print(f"[CoordinateMapper] Warning: normalized_x {normalized_x} out of range [0-1000], clamping")
+            normalized_x = max(0, min(normalized_x, 1000))
+        if not (0 <= normalized_y <= 1000):
+            print(f"[CoordinateMapper] Warning: normalized_y {normalized_y} out of range [0-1000], clamping")
+            normalized_y = max(0, min(normalized_y, 1000))
+        
+        # Convert to pixel coordinates using screen dimensions
         pixel_x = int((normalized_x / 1000.0) * self.screen_width)
         pixel_y = int((normalized_y / 1000.0) * self.screen_height)
         
@@ -56,15 +66,30 @@ class LinguistAssist:
     SYSTEM_INSTRUCTION = (
         "You are a GUI automation agent. When given a task and a screenshot, "
         "identify the center point of the UI element required to fulfill the task. "
-        "Return the coordinates in JSON format: {'point': [y, x]}. "
-        "The coordinates must be normalized to a 0-1000 scale."
+        "Return ONLY valid JSON format: {\"point\": [y, x]}. "
+        "The coordinates must be normalized to a 0-1000 scale where: "
+        "- x=0 is the left edge, x=1000 is the right edge "
+        "- y=0 is the top edge, y=1000 is the bottom edge "
+        "Return ONLY the JSON object, no additional text or explanation. "
+        "The point array must contain exactly 2 numbers: [y, x] in that order."
     )
     
     PLANNING_INSTRUCTION = (
         "You are a GUI automation planning agent. Analyze the screenshot and the overall goal. "
-        "Determine: (1) Is the goal complete? (2) If not, what is the next action needed? "
-        "Return JSON format: {'complete': true/false, 'action': 'description of next action', 'point': [y, x] if action needed}. "
-        "If complete is true, point can be omitted. The coordinates must be normalized to a 0-1000 scale."
+        "Determine: (1) Is the goal complete? (2) If not, what is the next SINGLE action needed? "
+        "CRITICAL: Before suggesting the same action again, verify if the previous action succeeded by checking the current screen state. "
+        "If you see the conversation is already open with the correct person, move to the next step (clicking the message field or typing). "
+        "Actions can be: 'click' (click on an element), 'type' (type text into a field), 'press_key' (press a keyboard key like Enter, Tab, Escape). "
+        "Return JSON format: {'complete': true/false, 'action_type': 'click'|'type'|'press_key', 'action': 'description of what you're doing', 'point': [y, x] if click/type needs coordinates, 'text': 'text to type' if type action, 'key': 'key name' if press_key}. "
+        "If complete is true, other fields can be omitted. The coordinates must be normalized to a 0-1000 scale. "
+        "IMPORTANT: Break down complex tasks into individual steps. For 'send message to X': "
+        "(1) First step: click on the contact in the DM list (ONLY if their conversation is not already open), "
+        "(2) Second step: verify the conversation is open (check if you see their name in the header), "
+        "(3) Third step: click in the message input field at the bottom, "
+        "(4) Fourth step: type the message (action_type='type', provide text field), "
+        "(5) Fifth step: send the message (action_type='press_key', key='enter' or click send button). "
+        "Only return ONE action per response. After each action, a new screenshot will be taken for the next step. "
+        "DO NOT repeat the same action if the screen shows it has already succeeded - move to the next step instead."
     )
     
     def __init__(self, model_name: str = "gemini-1.5-flash", api_key: Optional[str] = None):
@@ -130,6 +155,98 @@ class LinguistAssist:
             )
             raise RuntimeError(error_msg) from e
     
+    def _extract_json_from_response(self, response_text: str) -> dict:
+        """
+        Robustly extract JSON from response text, handling various formats.
+        
+        Args:
+            response_text: Raw response text from Gemini
+        
+        Returns:
+            Parsed JSON dictionary
+        """
+        original_text = response_text.strip()
+        
+        # Strategy 1: Try direct JSON parse first
+        try:
+            return json.loads(original_text)
+        except json.JSONDecodeError:
+            pass
+        
+        # Strategy 2: Extract from markdown code blocks
+        if "```json" in original_text:
+            json_start = original_text.find("```json") + 7
+            json_end = original_text.find("```", json_start)
+            if json_end != -1:
+                try:
+                    return json.loads(original_text[json_start:json_end].strip())
+                except json.JSONDecodeError:
+                    pass
+        
+        if "```" in original_text:
+            json_start = original_text.find("```") + 3
+            json_end = original_text.find("```", json_start)
+            if json_end != -1:
+                try:
+                    return json.loads(original_text[json_start:json_end].strip())
+                except json.JSONDecodeError:
+                    pass
+        
+        # Strategy 3: Find JSON object with balanced braces
+        brace_start = original_text.find('{')
+        if brace_start != -1:
+            brace_count = 0
+            brace_end = -1
+            for i in range(brace_start, len(original_text)):
+                if original_text[i] == '{':
+                    brace_count += 1
+                elif original_text[i] == '}':
+                    brace_count -= 1
+                    if brace_count == 0:
+                        brace_end = i + 1
+                        break
+            
+            if brace_end != -1:
+                json_candidate = original_text[brace_start:brace_end]
+                try:
+                    return json.loads(json_candidate)
+                except json.JSONDecodeError:
+                    pass
+        
+        # Strategy 4: Use regex to find JSON-like structures
+        # Match: {"point": [number, number]} or {'point': [number, number]}
+        json_patterns = [
+            r'\{[^{}]*"point"\s*:\s*\[\s*(\d+(?:\.\d+)?)\s*,\s*(\d+(?:\.\d+)?)\s*\][^{}]*\}',
+            r"\{[^{}]*'point'\s*:\s*\[\s*(\d+(?:\.\d+)?)\s*,\s*(\d+(?:\.\d+)?)\s*\][^{}]*\}",
+            r'\{[^{}]*point[^{}]*\[\s*(\d+(?:\.\d+)?)\s*,\s*(\d+(?:\.\d+)?)\s*\][^{}]*\}',
+        ]
+        
+        for pattern in json_patterns:
+            match = re.search(pattern, original_text, re.IGNORECASE)
+            if match:
+                try:
+                    y_val = float(match.group(1))
+                    x_val = float(match.group(2))
+                    return {"point": [y_val, x_val]}
+                except (ValueError, IndexError):
+                    continue
+        
+        # Strategy 5: Try to extract coordinates directly using regex
+        # Look for [number, number] pattern that might be coordinates
+        coord_pattern = r'\[\s*(\d+(?:\.\d+)?)\s*,\s*(\d+(?:\.\d+)?)\s*\]'
+        coord_match = re.search(coord_pattern, original_text)
+        if coord_match:
+            try:
+                y_val = float(coord_match.group(1))
+                x_val = float(coord_match.group(2))
+                # Validate they're in reasonable range (0-1000)
+                if 0 <= y_val <= 1000 and 0 <= x_val <= 1000:
+                    return {"point": [y_val, x_val]}
+            except (ValueError, IndexError):
+                pass
+        
+        raise ValueError(f"Could not extract valid JSON from response: {original_text[:200]}")
+    
     def detect_element(self, task: str, screenshot: Optional[Image.Image] = None) -> Tuple[int, int]:
         """
         Detect UI element coordinates based on task description.
@@ -147,69 +264,60 @@ class LinguistAssist:
         print(f"\n[LinguistAssist] Analyzing screenshot with {self.model_name}...")
         print(f"[LinguistAssist] Task: {task}")
         
-        try:
-            # Send image and task to Gemini
-            response = self.model.generate_content([
-                f"Task: {task}",
-                screenshot
-            ])
-            
-            # Parse the response
-            response_text = response.text.strip()
-            print(f"[LinguistAssist] Raw response: {response_text}")
-            
-            # Try to extract JSON from the response
-            # Handle cases where response might be wrapped in markdown code blocks
-            if "```json" in response_text:
-                json_start = response_text.find("```json") + 7
-                json_end = response_text.find("```", json_start)
-                response_text = response_text[json_start:json_end].strip()
-            elif "```" in response_text:
-                json_start = response_text.find("```") + 3
-                json_end = response_text.find("```", json_start)
-                response_text = response_text[json_start:json_end].strip()
-            
-            # Try to find JSON object in the text (handles cases where JSON is embedded in text)
-            json_pattern = r'\{[^{}]*"point"[^{}]*\[[^\]]+\][^{}]*\}'
-            json_match = re.search(json_pattern, response_text)
-            if json_match:
-                response_text = json_match.group(0)
-            
-            # Also try with single quotes (Python dict format)
-            if not json_match:
-                json_pattern_single = r"\{[^{}]*'point'[^{}]*\[[^\]]+\][^{}]*\}"
-                json_match = re.search(json_pattern_single, response_text)
-                if json_match:
-                    # Convert single quotes to double quotes for JSON parsing
-                    response_text = json_match.group(0).replace("'", '"')
-            
-            # Parse JSON
-            data = json.loads(response_text)
-            
-            if "point" not in data:
-                raise ValueError("Response does not contain 'point' key")
-            
-            normalized_coords = data["point"]
-            if len(normalized_coords) != 2:
-                raise ValueError("Point must contain exactly 2 coordinates [y, x]")
-            
-            normalized_y, normalized_x = normalized_coords
-            
-            # Convert to pixel coordinates
-            pixel_x, pixel_y = self.coordinate_mapper.normalize_to_pixels(
-                normalized_y, normalized_x
-            )
-            
-            print(f"[LinguistAssist] Detected normalized coordinates: [y={normalized_y}, x={normalized_x}]")
-            print(f"[LinguistAssist] Screen resolution: {self.coordinate_mapper.screen_width}x{self.coordinate_mapper.screen_height}")
-            print(f"[LinguistAssist] Pixel coordinates: ({pixel_x}, {pixel_y})")
-            
-            return (pixel_x, pixel_y)
-            
-        except json.JSONDecodeError as e:
-            raise ValueError(f"Failed to parse JSON response: {e}\nResponse: {response_text}")
-        except Exception as e:
-            raise RuntimeError(f"Error during element detection: {e}")
+        max_retries = 2
+        for attempt in range(max_retries):
+            try:
+                # Send image and task to Gemini
+                response = self.model.generate_content([
+                    f"Task: {task}",
+                    screenshot
+                ])
+                
+                # Parse the response
+                response_text = response.text.strip()
+                print(f"[LinguistAssist] Raw response: {response_text}")
+                
+                # Extract JSON using robust method
+                data = self._extract_json_from_response(response_text)
+                
+                if "point" not in data:
+                    raise ValueError("Response does not contain 'point' key")
+                
+                normalized_coords = data["point"]
+                if not isinstance(normalized_coords, (list, tuple)) or len(normalized_coords) != 2:
+                    raise ValueError(f"Point must be a list/tuple with exactly 2 coordinates, got: {normalized_coords}")
+                
+                normalized_y, normalized_x = float(normalized_coords[0]), float(normalized_coords[1])
+                
+                # Validate normalized coordinates
+                if not (0 <= normalized_x <= 1000 and 0 <= normalized_y <= 1000):
+                    print(f"[LinguistAssist] Warning: Coordinates out of range: x={normalized_x}, y={normalized_y}")
+                    if attempt < max_retries - 1:
+                        print(f"[LinguistAssist] Retrying... (attempt {attempt + 1}/{max_retries})")
+                        continue
+                
+                # Convert to pixel coordinates
+                pixel_x, pixel_y = self.coordinate_mapper.normalize_to_pixels(
+                    normalized_y, normalized_x
+                )
+                
+                print(f"[LinguistAssist] Detected normalized coordinates: [y={normalized_y:.2f}, x={normalized_x:.2f}]")
+                print(f"[LinguistAssist] Screen resolution: {self.coordinate_mapper.screen_width}x{self.coordinate_mapper.screen_height}")
+                print(f"[LinguistAssist] Pixel coordinates: ({pixel_x}, {pixel_y})")
+                
+                return (pixel_x, pixel_y)
+                
+            except (json.JSONDecodeError, ValueError) as e:
+                if attempt < max_retries - 1:
+                    print(f"[LinguistAssist] Parse error, retrying... (attempt {attempt + 1}/{max_retries}): {e}")
+                    time.sleep(0.5)  # Brief delay before retry
+                    continue
+                else:
+                    raise ValueError(f"Failed to parse JSON response after {max_retries} attempts: {e}\nResponse: {response_text[:500]}")
+            except Exception as e:
+                raise RuntimeError(f"Error during element detection: {e}")
+        
+        raise RuntimeError(f"Failed to detect element after {max_retries} attempts")
     
     def click_element(self, task: str, screenshot: Optional[Image.Image] = None, 
                      require_confirmation: bool = False) -> bool:
@@ -264,6 +372,8 @@ class LinguistAssist:
         
         step_count = 0
         action_history = []
+        recent_actions = []  # Track recent actions to detect loops
+        recent_coordinates = []  # Track recent coordinates to detect loops
         
         while step_count < max_steps:
             try:
@@ -308,85 +418,224 @@ class LinguistAssist:
                     # Extract complete
                     complete_match = re.search(r'"complete"\s*:\s*(true|false)', response_text, re.IGNORECASE)
                     
-                    # Extract action - find "action": " and then find the value until we hit ", "point" or end
-                    # Look for "action": " then capture until we see ", "point" or end of string
+                    # Extract action_type
+                    action_type_match = re.search(r'"action_type"\s*:\s*"(click|type|press_key)"', response_text, re.IGNORECASE)
+                    action_type = action_type_match.group(1).lower() if action_type_match else "click"
+                    
+                    # Extract action description
+                    action_value = ""
                     action_start = response_text.find('"action": "')
                     if action_start != -1:
                         action_start += len('"action": "')
-                        # Find the end - look for ", "point" or end of object
-                        point_start = response_text.find(', "point"', action_start)
-                        if point_start == -1:
-                            point_start = response_text.find('", "point"', action_start)
+                        # Find the end - look for ", "point", ", "text", ", "key" or end of object
+                        end_markers = [', "point"', '", "point"', ', "text"', '", "text"', ', "key"', '", "key"', ', "action_type"', '", "action_type"']
+                        point_start = None
+                        for marker in end_markers:
+                            pos = response_text.find(marker, action_start)
+                            if pos != -1 and (point_start is None or pos < point_start):
+                                point_start = pos
                         if point_start != -1:
                             action_value = response_text[action_start:point_start].strip()
-                            # Remove trailing quote if present
                             if action_value.endswith('"'):
                                 action_value = action_value[:-1]
-                            # Remove any unescaped quotes from the action value
                             action_value = action_value.replace('"', '')
-                        else:
-                            action_value = ""
-                    else:
-                        action_value = ""
                     
-                    # Extract point
-                    point_match = re.search(r'"point"\s*:\s*\[(\d+),\s*(\d+)\]', response_text)
+                    # Extract text (for type actions)
+                    text_value = ""
+                    text_match = re.search(r'"text"\s*:\s*"([^"]*(?:"[^"]*)*)"', response_text)
+                    if text_match:
+                        text_value = text_match.group(1).replace('"', '')
                     
-                    if complete_match and action_value and point_match:
+                    # Extract key (for press_key actions)
+                    key_value = ""
+                    key_match = re.search(r'"key"\s*:\s*"([^"]+)"', response_text)
+                    if key_match:
+                        key_value = key_match.group(1)
+                    
+                    # Extract point - handle both integer and float coordinates
+                    point_patterns = [
+                        r'"point"\s*:\s*\[\s*(\d+(?:\.\d+)?)\s*,\s*(\d+(?:\.\d+)?)\s*\]',
+                        r"'point'\s*:\s*\[\s*(\d+(?:\.\d+)?)\s*,\s*(\d+(?:\.\d+)?)\s*\]",
+                    ]
+                    point_match = None
+                    for pattern in point_patterns:
+                        point_match = re.search(pattern, response_text)
+                        if point_match:
+                            break
+                    
+                    if complete_match:
                         plan_data = {
                             "complete": complete_match.group(1).lower() == "true",
-                            "action": action_value,
-                            "point": [int(point_match.group(1)), int(point_match.group(2))]
+                            "action_type": action_type,
                         }
+                        if action_value:
+                            plan_data["action"] = action_value
+                        if text_value:
+                            plan_data["text"] = text_value
+                        if key_value:
+                            plan_data["key"] = key_value
+                        if point_match:
+                            try:
+                                y_val = float(point_match.group(1))
+                                x_val = float(point_match.group(2))
+                                # Validate coordinates are in range
+                                if 0 <= y_val <= 1000 and 0 <= x_val <= 1000:
+                                    plan_data["point"] = [y_val, x_val]
+                                else:
+                                    print(f"[LinguistAssist] Warning: Coordinates out of range: y={y_val}, x={x_val}")
+                            except (ValueError, IndexError) as e:
+                                print(f"[LinguistAssist] Warning: Could not parse point coordinates: {e}")
                     else:
-                        raise ValueError(f"Failed to parse planning response. Complete: {complete_match is not None}, Action: {bool(action_value)}, Point: {point_match is not None}")
+                        raise ValueError(f"Failed to parse planning response. Could not extract required fields.")
                 
                 # Check if goal is complete
                 if plan_data.get("complete", False):
                     print(f"\n[LinguistAssist] ✓ Goal achieved! Completed in {step_count} steps.")
                     return True
                 
-                # Get next action
+                # Get action type and details
+                action_type = plan_data.get("action_type", "click")  # Default to click for backward compatibility
                 action = plan_data.get("action", "")
-                if not action:
+                text_to_type = plan_data.get("text", "")
+                key_to_press = plan_data.get("key", "")
+                
+                if not action and not text_to_type and not key_to_press:
                     print("[LinguistAssist] No action specified. Goal may be complete or unclear.")
                     return False
                 
-                print(f"[LinguistAssist] Next action: {action}")
+                print(f"[LinguistAssist] Action type: {action_type}")
+                if action:
+                    print(f"[LinguistAssist] Action: {action}")
+                if text_to_type:
+                    print(f"[LinguistAssist] Text to type: {text_to_type}")
+                if key_to_press:
+                    print(f"[LinguistAssist] Key to press: {key_to_press}")
                 
-                # Get coordinates for the action
-                if "point" in plan_data:
-                    normalized_coords = plan_data["point"]
-                    if len(normalized_coords) == 2:
-                        normalized_y, normalized_x = normalized_coords
-                        pixel_x, pixel_y = self.coordinate_mapper.normalize_to_pixels(
-                            normalized_y, normalized_x
-                        )
-                        
-                        print(f"[LinguistAssist] Clicking at ({pixel_x}, {pixel_y})...")
-                        pyautogui.click(pixel_x, pixel_y)
-                        print(f"[LinguistAssist] Action executed: {action}")
-                        action_history.append(action)
-                        
-                        # Small delay to allow UI to update
-                        time.sleep(1)
+                # Execute based on action type
+                if action_type == "type":
+                    # Type text - first click on the field if coordinates provided or action describes the field
+                    if "point" in plan_data:
+                        normalized_coords = plan_data["point"]
+                        if len(normalized_coords) == 2:
+                            normalized_y, normalized_x = float(normalized_coords[0]), float(normalized_coords[1])
+                            pixel_x, pixel_y = self.coordinate_mapper.normalize_to_pixels(
+                                normalized_y, normalized_x
+                            )
+                            print(f"[LinguistAssist] Clicking on input field at ({pixel_x}, {pixel_y})...")
+                            pyautogui.click(pixel_x, pixel_y)
+                            time.sleep(0.3)  # Brief delay for field to focus
+                    elif action:
+                        # Try to detect the input field from action description
+                        try:
+                            pixel_x, pixel_y = self.detect_element(action, screenshot)
+                            print(f"[LinguistAssist] Clicking on input field at ({pixel_x}, {pixel_y})...")
+                            pyautogui.click(pixel_x, pixel_y)
+                            time.sleep(0.3)
+                        except Exception as e:
+                            print(f"[LinguistAssist] Could not locate input field, trying to type anyway: {e}")
+                    
+                    # Type the text
+                    if text_to_type:
+                        print(f"[LinguistAssist] Typing: {text_to_type}")
+                        pyautogui.write(text_to_type, interval=0.05)  # Type with small delay between characters
+                        action_history.append(f"Typed: {text_to_type}")
                     else:
-                        print(f"[LinguistAssist] Invalid coordinates format. Skipping action.")
-                else:
-                    # If no coordinates, try to detect them using the action description
-                    print(f"[LinguistAssist] No coordinates provided. Detecting element for: {action}")
-                    try:
-                        pixel_x, pixel_y = self.detect_element(action, screenshot)
-                        print(f"[LinguistAssist] Clicking at ({pixel_x}, {pixel_y})...")
-                        pyautogui.click(pixel_x, pixel_y)
-                        print(f"[LinguistAssist] Action executed: {action}")
-                        action_history.append(action)
-                        
-                        # Small delay to allow UI to update
-                        time.sleep(1)
-                    except Exception as e:
-                        print(f"[LinguistAssist] Failed to detect element: {e}")
+                        print("[LinguistAssist] No text provided for type action.")
                         return False
+                    
+                    time.sleep(0.5)  # Delay after typing
+                    
+                elif action_type == "press_key":
+                    # Press a keyboard key
+                    if key_to_press:
+                        key_name = key_to_press.lower()
+                        print(f"[LinguistAssist] Pressing key: {key_name}")
+                        
+                        # Map common key names to pyautogui key names
+                        key_mapping = {
+                            "enter": "return",
+                            "return": "return",
+                            "tab": "tab",
+                            "escape": "esc",
+                            "esc": "esc",
+                            "space": "space",
+                            "backspace": "backspace",
+                            "delete": "delete",
+                        }
+                        
+                        pyautogui_key = key_mapping.get(key_name, key_name)
+                        pyautogui.press(pyautogui_key)
+                        action_history.append(f"Pressed key: {key_name}")
+                        time.sleep(0.5)
+                    else:
+                        print("[LinguistAssist] No key specified for press_key action.")
+                        return False
+                        
+                else:  # Default: click action
+                    # Get coordinates for the click action
+                    if "point" in plan_data:
+                        normalized_coords = plan_data["point"]
+                        if len(normalized_coords) == 2:
+                            normalized_y, normalized_x = float(normalized_coords[0]), float(normalized_coords[1])
+                            pixel_x, pixel_y = self.coordinate_mapper.normalize_to_pixels(
+                                normalized_y, normalized_x
+                            )
+                            
+                            # Check for loops: if we've clicked near this location recently, skip or try different approach
+                            is_repeat = False
+                            for prev_coords in recent_coordinates[-3:]:  # Check last 3 actions
+                                if prev_coords:
+                                    prev_x, prev_y = prev_coords
+                                    # If coordinates are very close (within 50 pixels), it's likely a repeat
+                                    if abs(pixel_x - prev_x) < 50 and abs(pixel_y - prev_y) < 50:
+                                        is_repeat = True
+                                        break
+                            
+                            # Check if we're repeating the same action
+                            if len(recent_actions) >= 2 and action.lower() in [a.lower() for a in recent_actions[-2:]]:
+                                print(f"[LinguistAssist] Warning: Detected potential loop - same action repeated")
+                                print(f"[LinguistAssist] Recent actions: {recent_actions[-3:]}")
+                                # Try a slightly different coordinate or wait longer
+                                if is_repeat:
+                                    print(f"[LinguistAssist] Coordinates are very similar to recent clicks. Waiting longer and trying again...")
+                                    time.sleep(2)  # Longer wait
+                            
+                            print(f"[LinguistAssist] Clicking at ({pixel_x}, {pixel_y})...")
+                            pyautogui.click(pixel_x, pixel_y)
+                            print(f"[LinguistAssist] Action executed: {action}")
+                            action_history.append(action)
+                            recent_actions.append(action)
+                            recent_coordinates.append((pixel_x, pixel_y))
+                            
+                            # Keep only last 5 actions/coordinates
+                            if len(recent_actions) > 5:
+                                recent_actions.pop(0)
+                            if len(recent_coordinates) > 5:
+                                recent_coordinates.pop(0)
+                            
+                            # Small delay to allow UI to update
+                            time.sleep(1.5)  # Increased delay for UI to update
+                        else:
+                            print(f"[LinguistAssist] Invalid coordinates format. Skipping action.")
+                    else:
+                        # If no coordinates, try to detect them using the action description
+                        if action:
+                            print(f"[LinguistAssist] No coordinates provided. Detecting element for: {action}")
+                            try:
+                                pixel_x, pixel_y = self.detect_element(action, screenshot)
+                                print(f"[LinguistAssist] Clicking at ({pixel_x}, {pixel_y})...")
+                                pyautogui.click(pixel_x, pixel_y)
+                                print(f"[LinguistAssist] Action executed: {action}")
+                                action_history.append(action)
+                                
+                                # Small delay to allow UI to update
+                                time.sleep(1)
+                            except Exception as e:
+                                print(f"[LinguistAssist] Failed to detect element: {e}")
+                                return False
+                        else:
+                            print("[LinguistAssist] No action or coordinates provided.")
+                            return False
                 
             except json.JSONDecodeError as e:
                 print(f"[LinguistAssist] Failed to parse planning response: {e}")
