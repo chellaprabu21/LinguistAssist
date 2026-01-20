@@ -27,19 +27,27 @@ class CoordinateMapper:
     
     def __init__(self):
         """Initialize with current screen resolution."""
-        self.screen_width, self.screen_height = pyautogui.size()
-        print(f"[CoordinateMapper] Screen resolution: {self.screen_width}x{self.screen_height}")
+        self.logical_width, self.logical_height = pyautogui.size()
+        print(f"[CoordinateMapper] Logical screen resolution: {self.logical_width}x{self.logical_height}")
     
-    def normalize_to_pixels(self, normalized_y: float, normalized_x: float) -> Tuple[int, int]:
+    def normalize_to_pixels(self, normalized_y: float, normalized_x: float, 
+                            screenshot_width: Optional[int] = None, 
+                            screenshot_height: Optional[int] = None) -> Tuple[int, int]:
         """
         Convert normalized coordinates (0-1000 scale) to pixel coordinates.
         
+        On macOS Retina displays, screenshots are captured at higher resolution than
+        the logical screen size. pyautogui.click() expects LOGICAL coordinates,
+        so we must scale down from screenshot (physical) coordinates to logical coordinates.
+        
         Args:
-            normalized_y: Y coordinate in 0-1000 scale
-            normalized_x: X coordinate in 0-1000 scale
+            normalized_y: Y coordinate in 0-1000 scale (based on screenshot)
+            normalized_x: X coordinate in 0-1000 scale (based on screenshot)
+            screenshot_width: Width of the screenshot image (if None, uses logical width)
+            screenshot_height: Height of the screenshot image (if None, uses logical height)
         
         Returns:
-            Tuple of (pixel_x, pixel_y) coordinates
+            Tuple of (pixel_x, pixel_y) coordinates in logical screen space
         """
         # Validate normalized coordinates
         if not (0 <= normalized_x <= 1000):
@@ -49,13 +57,30 @@ class CoordinateMapper:
             print(f"[CoordinateMapper] Warning: normalized_y {normalized_y} out of range [0-1000], clamping")
             normalized_y = max(0, min(normalized_y, 1000))
         
-        # Convert to pixel coordinates using screen dimensions
-        pixel_x = int((normalized_x / 1000.0) * self.screen_width)
-        pixel_y = int((normalized_y / 1000.0) * self.screen_height)
+        # Use screenshot dimensions if provided, otherwise use logical screen size
+        if screenshot_width is None:
+            screenshot_width = self.logical_width
+        if screenshot_height is None:
+            screenshot_height = self.logical_height
         
-        # Ensure coordinates are within screen bounds
-        pixel_x = max(0, min(pixel_x, self.screen_width - 1))
-        pixel_y = max(0, min(pixel_y, self.screen_height - 1))
+        # Convert normalized coordinates to screenshot pixel coordinates
+        screenshot_x = (normalized_x / 1000.0) * screenshot_width
+        screenshot_y = (normalized_y / 1000.0) * screenshot_height
+        
+        # Calculate scale factor (screenshot is usually 2x on Retina displays)
+        scale_x = screenshot_width / self.logical_width if self.logical_width > 0 else 1.0
+        scale_y = screenshot_height / self.logical_height if self.logical_height > 0 else 1.0
+        
+        # Convert from screenshot (physical) coordinates to logical screen coordinates
+        # pyautogui.click() expects LOGICAL coordinates, not physical pixel coordinates!
+        pixel_x = int(screenshot_x / scale_x)
+        pixel_y = int(screenshot_y / scale_y)
+        
+        # Ensure coordinates are within logical screen bounds
+        pixel_x = max(0, min(pixel_x, self.logical_width - 1))
+        pixel_y = max(0, min(pixel_y, self.logical_height - 1))
+        
+        print(f"[CoordinateMapper] Mapped ({normalized_x:.1f}, {normalized_y:.1f}) -> screenshot ({screenshot_x:.1f}, {screenshot_y:.1f}) -> logical ({pixel_x}, {pixel_y}) [scale: {scale_x:.2f}x]")
         
         return (pixel_x, pixel_y)
 
@@ -134,6 +159,7 @@ class LinguistAssist:
     def capture_screenshot(self) -> Image.Image:
         """
         Capture a screenshot of the current screen.
+        Tries screenshot service first, then falls back to direct methods.
         
         Returns:
             PIL Image object of the screenshot
@@ -141,19 +167,69 @@ class LinguistAssist:
         Raises:
             RuntimeError: If screenshot capture fails (e.g., missing permissions)
         """
+        # Try screenshot service first (for Launch Agent compatibility)
         try:
+            import requests
+            import base64
+            import io
+            
+            response = requests.get("http://127.0.0.1:8081/screenshot", timeout=5)
+            if response.status_code == 200:
+                data = response.json()
+                if data.get("success"):
+                    img_base64 = data.get("image")
+                    img_data = base64.b64decode(img_base64)
+                    screenshot = Image.open(io.BytesIO(img_data))
+                    print("[LinguistAssist] Screenshot captured via screenshot service")
+                    return screenshot
+                else:
+                    print(f"[LinguistAssist] Screenshot service error: {data.get('error')}")
+            else:
+                print(f"[LinguistAssist] Screenshot service returned status {response.status_code}")
+        except requests.exceptions.RequestException as e:
+            print(f"[LinguistAssist] Screenshot service not available: {e}")
+        except Exception as e:
+            print(f"[LinguistAssist] Screenshot service error: {e}")
+        
+        # Fallback to direct screenshot methods
+        try:
+            # Try pyautogui first (works in terminal/interactive sessions)
             screenshot = pyautogui.screenshot()
             return screenshot
         except Exception as e:
-            error_msg = (
-                f"Failed to capture screenshot: {e}\n\n"
-                "On macOS, you may need to grant screen recording permissions:\n"
-                "1. Go to System Settings > Privacy & Security > Screen Recording\n"
-                "2. Enable permissions for Terminal (or your terminal app)\n"
-                "3. Restart your terminal after granting permissions\n\n"
-                "Alternatively, ensure you're running this in a GUI environment."
-            )
-            raise RuntimeError(error_msg) from e
+            # Fallback to screencapture command (works better in Launch Agents)
+            try:
+                import subprocess
+                import tempfile
+                
+                # Use macOS screencapture command
+                temp_file = tempfile.NamedTemporaryFile(suffix='.png', delete=False)
+                temp_file.close()
+                
+                result = subprocess.run(
+                    ['screencapture', '-x', temp_file.name],
+                    capture_output=True,
+                    timeout=5
+                )
+                
+                if result.returncode == 0:
+                    screenshot = Image.open(temp_file.name)
+                    os.unlink(temp_file.name)
+                    return screenshot
+                else:
+                    os.unlink(temp_file.name)
+                    raise RuntimeError(f"screencapture failed: {result.stderr.decode()}")
+            except Exception as fallback_error:
+                error_msg = (
+                    f"Failed to capture screenshot: {e}\n"
+                    f"Fallback also failed: {fallback_error}\n\n"
+                    "On macOS, you may need to grant screen recording permissions:\n"
+                    "1. Go to System Settings > Privacy & Security > Screen Recording\n"
+                    "2. Enable permissions for Python.app (or Python 3.12)\n"
+                    "3. Restart the service after granting permissions\n\n"
+                    "Alternatively, ensure you're running this in a GUI environment."
+                )
+                raise RuntimeError(error_msg) from e
     
     def _extract_json_from_response(self, response_text: str) -> dict:
         """
@@ -261,8 +337,10 @@ class LinguistAssist:
         if screenshot is None:
             screenshot = self.capture_screenshot()
         
+        screenshot_width, screenshot_height = screenshot.size
         print(f"\n[LinguistAssist] Analyzing screenshot with {self.model_name}...")
         print(f"[LinguistAssist] Task: {task}")
+        print(f"[LinguistAssist] Screenshot dimensions: {screenshot_width}x{screenshot_height}")
         
         max_retries = 2
         for attempt in range(max_retries):
@@ -296,13 +374,13 @@ class LinguistAssist:
                         print(f"[LinguistAssist] Retrying... (attempt {attempt + 1}/{max_retries})")
                         continue
                 
-                # Convert to pixel coordinates
+                # Convert to pixel coordinates using screenshot dimensions
                 pixel_x, pixel_y = self.coordinate_mapper.normalize_to_pixels(
-                    normalized_y, normalized_x
+                    normalized_y, normalized_x, screenshot_width, screenshot_height
                 )
                 
                 print(f"[LinguistAssist] Detected normalized coordinates: [y={normalized_y:.2f}, x={normalized_x:.2f}]")
-                print(f"[LinguistAssist] Screen resolution: {self.coordinate_mapper.screen_width}x{self.coordinate_mapper.screen_height}")
+                print(f"[LinguistAssist] Logical screen resolution: {self.coordinate_mapper.logical_width}x{self.coordinate_mapper.logical_height}")
                 print(f"[LinguistAssist] Pixel coordinates: ({pixel_x}, {pixel_y})")
                 
                 return (pixel_x, pixel_y)
@@ -379,9 +457,11 @@ class LinguistAssist:
             try:
                 # Take a fresh screenshot
                 screenshot = self.capture_screenshot()
+                screenshot_width, screenshot_height = screenshot.size
                 step_count += 1
                 
                 print(f"\n[LinguistAssist] Step {step_count}: Analyzing screen...")
+                print(f"[LinguistAssist] Screenshot dimensions: {screenshot_width}x{screenshot_height}")
                 
                 # Use planning model to determine next action
                 planning_prompt = f"Goal: {goal}\n\nAction history so far: {', '.join(action_history) if action_history else 'None'}\n\nAnalyze the current screen state and determine the next action."
@@ -519,10 +599,21 @@ class LinguistAssist:
                         if len(normalized_coords) == 2:
                             normalized_y, normalized_x = float(normalized_coords[0]), float(normalized_coords[1])
                             pixel_x, pixel_y = self.coordinate_mapper.normalize_to_pixels(
-                                normalized_y, normalized_x
+                                normalized_y, normalized_x, screenshot_width, screenshot_height
                             )
                             print(f"[LinguistAssist] Clicking on input field at ({pixel_x}, {pixel_y})...")
-                            pyautogui.click(pixel_x, pixel_y)
+                            # Try GUI action service first
+                            try:
+                                import requests
+                                response = requests.post(
+                                    "http://127.0.0.1:8081/click",
+                                    json={"x": pixel_x, "y": pixel_y},
+                                    timeout=2
+                                )
+                                if not (response.status_code == 200 and response.json().get("success")):
+                                    pyautogui.click(pixel_x, pixel_y)
+                            except Exception:
+                                pyautogui.click(pixel_x, pixel_y)
                             time.sleep(0.3)  # Brief delay for field to focus
                     elif action:
                         # Try to detect the input field from action description
@@ -537,7 +628,18 @@ class LinguistAssist:
                     # Type the text
                     if text_to_type:
                         print(f"[LinguistAssist] Typing: {text_to_type}")
-                        pyautogui.write(text_to_type, interval=0.05)  # Type with small delay between characters
+                        # Try GUI action service first
+                        try:
+                            import requests
+                            response = requests.post(
+                                "http://127.0.0.1:8081/type",
+                                json={"text": text_to_type, "interval": 0.05},
+                                timeout=5
+                            )
+                            if not (response.status_code == 200 and response.json().get("success")):
+                                pyautogui.write(text_to_type, interval=0.05)
+                        except Exception:
+                            pyautogui.write(text_to_type, interval=0.05)
                         action_history.append(f"Typed: {text_to_type}")
                     else:
                         print("[LinguistAssist] No text provided for type action.")
@@ -564,7 +666,18 @@ class LinguistAssist:
                         }
                         
                         pyautogui_key = key_mapping.get(key_name, key_name)
-                        pyautogui.press(pyautogui_key)
+                        # Try GUI action service first
+                        try:
+                            import requests
+                            response = requests.post(
+                                "http://127.0.0.1:8081/press_key",
+                                json={"key": key_name},
+                                timeout=2
+                            )
+                            if not (response.status_code == 200 and response.json().get("success")):
+                                pyautogui.press(pyautogui_key)
+                        except Exception:
+                            pyautogui.press(pyautogui_key)
                         action_history.append(f"Pressed key: {key_name}")
                         time.sleep(0.5)
                     else:
@@ -578,7 +691,7 @@ class LinguistAssist:
                         if len(normalized_coords) == 2:
                             normalized_y, normalized_x = float(normalized_coords[0]), float(normalized_coords[1])
                             pixel_x, pixel_y = self.coordinate_mapper.normalize_to_pixels(
-                                normalized_y, normalized_x
+                                normalized_y, normalized_x, screenshot_width, screenshot_height
                             )
                             
                             # Check for loops: if we've clicked near this location recently, skip or try different approach
@@ -601,7 +714,26 @@ class LinguistAssist:
                                     time.sleep(2)  # Longer wait
                             
                             print(f"[LinguistAssist] Clicking at ({pixel_x}, {pixel_y})...")
-                            pyautogui.click(pixel_x, pixel_y)
+                            # Try GUI action service first (for Launch Agent compatibility)
+                            try:
+                                import requests
+                                response = requests.post(
+                                    "http://127.0.0.1:8081/click",
+                                    json={"x": pixel_x, "y": pixel_y},
+                                    timeout=2
+                                )
+                                if response.status_code == 200 and response.json().get("success"):
+                                    print(f"[LinguistAssist] Click executed via GUI service")
+                                else:
+                                    # Fallback to direct pyautogui
+                                    pyautogui.click(pixel_x, pixel_y)
+                            except Exception:
+                                # Fallback to direct pyautogui
+                                pyautogui.click(pixel_x, pixel_y)
+                            
+                            # Wait a bit for the click to register
+                            time.sleep(0.3)
+                            
                             print(f"[LinguistAssist] Action executed: {action}")
                             action_history.append(action)
                             recent_actions.append(action)
@@ -613,8 +745,8 @@ class LinguistAssist:
                             if len(recent_coordinates) > 5:
                                 recent_coordinates.pop(0)
                             
-                            # Small delay to allow UI to update
-                            time.sleep(1.5)  # Increased delay for UI to update
+                            # Delay to allow UI to update and verify action took effect
+                            time.sleep(2.0)  # Increased delay for UI to update and verify
                         else:
                             print(f"[LinguistAssist] Invalid coordinates format. Skipping action.")
                     else:
@@ -624,7 +756,18 @@ class LinguistAssist:
                             try:
                                 pixel_x, pixel_y = self.detect_element(action, screenshot)
                                 print(f"[LinguistAssist] Clicking at ({pixel_x}, {pixel_y})...")
-                                pyautogui.click(pixel_x, pixel_y)
+                                # Try GUI action service first
+                                try:
+                                    import requests
+                                    response = requests.post(
+                                        "http://127.0.0.1:8081/click",
+                                        json={"x": pixel_x, "y": pixel_y},
+                                        timeout=2
+                                    )
+                                    if not (response.status_code == 200 and response.json().get("success")):
+                                        pyautogui.click(pixel_x, pixel_y)
+                                except Exception:
+                                    pyautogui.click(pixel_x, pixel_y)
                                 print(f"[LinguistAssist] Action executed: {action}")
                                 action_history.append(action)
                                 
