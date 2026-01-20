@@ -16,8 +16,9 @@ from typing import Optional, Dict, List
 from functools import wraps
 from contextlib import contextmanager
 
-from flask import Flask, request, jsonify
+from flask import Flask, request, jsonify, send_from_directory
 from flask_cors import CORS
+import os
 
 # Database setup
 DB_FILE = os.getenv('DATABASE_URL', 'sqlite:///linguist_assist.db').replace('sqlite:///', '')
@@ -151,6 +152,71 @@ def require_api_key(f):
         
         return f(*args, **kwargs)
     return decorated_function
+
+
+@app.route('/', methods=['GET'])
+def index():
+    """Serve the admin dashboard."""
+    # Try multiple possible static directories (static, public, or current dir)
+    possible_dirs = [
+        os.path.join(os.path.dirname(__file__), 'static'),
+        os.path.join(os.path.dirname(__file__), 'public'),
+        os.path.join(os.path.dirname(os.path.abspath(__file__)), 'static'),
+        os.path.join(os.path.dirname(os.path.abspath(__file__)), 'public'),
+        'static',
+        'public',
+    ]
+    
+    for static_dir in possible_dirs:
+        html_path = os.path.join(static_dir, 'index.html')
+        if os.path.exists(html_path):
+            return send_from_directory(static_dir, 'index.html')
+    
+    # If HTML file not found, read it from the static directory in the repo
+    # This handles Vercel deployment where files might be in different locations
+    try:
+        # Try to read the embedded HTML (we'll embed it as fallback)
+        html_content = get_embedded_html()
+        return html_content, 200, {'Content-Type': 'text/html; charset=utf-8'}
+    except:
+        return jsonify({
+            "message": "LinguistAssist API",
+            "version": "1.0.0-cloud",
+            "dashboard": "Dashboard HTML not found. Please ensure static/index.html exists.",
+            "api_docs": "/api/v1/health"
+        }), 200
+
+
+def get_embedded_html():
+    """Get embedded HTML for dashboard (fallback if file not found)."""
+    # Read from static/index.html if it exists
+    static_paths = [
+        os.path.join(os.path.dirname(__file__), 'static', 'index.html'),
+        os.path.join(os.path.dirname(__file__), 'public', 'index.html'),
+        'static/index.html',
+        'public/index.html',
+    ]
+    
+    for path in static_paths:
+        if os.path.exists(path):
+            with open(path, 'r', encoding='utf-8') as f:
+                return f.read()
+    
+    # Return minimal HTML that loads the dashboard
+    return """
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <title>LinguistAssist API</title>
+        <style>body{font-family:sans-serif;padding:40px;text-align:center;}</style>
+    </head>
+    <body>
+        <h1>LinguistAssist API</h1>
+        <p>Dashboard HTML file not found. Please check deployment.</p>
+        <p><a href="/api/v1/health">API Health Check</a></p>
+    </body>
+    </html>
+    """
 
 
 @app.route('/api/v1/health', methods=['GET'])
