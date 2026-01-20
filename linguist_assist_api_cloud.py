@@ -56,19 +56,56 @@ def init_database():
                 status TEXT NOT NULL DEFAULT 'queued',
                 timestamp REAL NOT NULL,
                 source TEXT DEFAULT 'api',
+                device_id TEXT,
                 result TEXT,
                 created_at REAL DEFAULT (strftime('%s', 'now')),
                 updated_at REAL DEFAULT (strftime('%s', 'now'))
             )
         ''')
         
-        # Create index for faster queries
+        # Devices table
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS devices (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                description TEXT,
+                last_seen REAL DEFAULT (strftime('%s', 'now')),
+                status TEXT DEFAULT 'offline',
+                created_at REAL DEFAULT (strftime('%s', 'now'))
+            )
+        ''')
+        
+        # Logs table
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS task_logs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                task_id TEXT NOT NULL,
+                timestamp REAL DEFAULT (strftime('%s', 'now')),
+                level TEXT DEFAULT 'INFO',
+                message TEXT NOT NULL,
+                FOREIGN KEY (task_id) REFERENCES tasks(id)
+            )
+        ''')
+        
+        # Create indexes for faster queries
         cursor.execute('''
             CREATE INDEX IF NOT EXISTS idx_status ON tasks(status)
         ''')
         
         cursor.execute('''
             CREATE INDEX IF NOT EXISTS idx_timestamp ON tasks(timestamp DESC)
+        ''')
+        
+        cursor.execute('''
+            CREATE INDEX IF NOT EXISTS idx_device_id ON tasks(device_id)
+        ''')
+        
+        cursor.execute('''
+            CREATE INDEX IF NOT EXISTS idx_task_logs_task_id ON task_logs(task_id)
+        ''')
+        
+        cursor.execute('''
+            CREATE INDEX IF NOT EXISTS idx_task_logs_timestamp ON task_logs(timestamp DESC)
         ''')
         
         conn.commit()
@@ -262,6 +299,7 @@ def submit_task():
         
         max_steps = data.get('max_steps', 20)
         task_id = data.get('id', str(uuid.uuid4()))
+        device_id = data.get('device_id')
         
         # Validate max_steps
         try:
@@ -277,6 +315,17 @@ def submit_task():
                 "message": "max_steps must be a number"
             }), 400
         
+        # Validate device_id if provided
+        if device_id:
+            with get_db() as conn:
+                cursor = conn.cursor()
+                cursor.execute('SELECT id FROM devices WHERE id = ?', (device_id,))
+                if not cursor.fetchone():
+                    return jsonify({
+                        "error": "Invalid device ID",
+                        "device_id": device_id
+                    }), 400
+        
         # Check if task ID already exists
         with get_db() as conn:
             cursor = conn.cursor()
@@ -289,9 +338,9 @@ def submit_task():
             
             # Insert task
             cursor.execute('''
-                INSERT INTO tasks (id, goal, max_steps, status, timestamp, source)
-                VALUES (?, ?, ?, 'queued', ?, 'api')
-            ''', (task_id, goal, max_steps, time.time()))
+                INSERT INTO tasks (id, goal, max_steps, status, timestamp, source, device_id)
+                VALUES (?, ?, ?, 'queued', ?, 'api', ?)
+            ''', (task_id, goal, max_steps, time.time(), device_id))
         
         return jsonify({
             "task_id": task_id,
@@ -316,7 +365,7 @@ def get_task_status(task_id: str):
         with get_db() as conn:
             cursor = conn.cursor()
             cursor.execute('''
-                SELECT id, goal, max_steps, status, timestamp, source, result
+                SELECT id, goal, max_steps, status, timestamp, source, device_id, result
                 FROM tasks WHERE id = ?
             ''', (task_id,))
             
@@ -356,13 +405,13 @@ def list_tasks():
             
             if status_filter == 'all':
                 cursor.execute('''
-                    SELECT id, goal, max_steps, status, timestamp, source, result
+                    SELECT id, goal, max_steps, status, timestamp, source, device_id, result
                     FROM tasks
                     ORDER BY timestamp DESC
                 ''')
             else:
                 cursor.execute('''
-                    SELECT id, goal, max_steps, status, timestamp, source, result
+                    SELECT id, goal, max_steps, status, timestamp, source, device_id, result
                     FROM tasks
                     WHERE status = ?
                     ORDER BY timestamp DESC
@@ -431,6 +480,229 @@ def cancel_task(task_id: str):
             "status": "cancelled",
             "message": "Task cancelled successfully"
         }), 200
+        
+    except Exception as e:
+        return jsonify({
+            "error": "Internal server error",
+            "message": str(e)
+        }), 500
+
+
+@app.route('/api/v1/tasks/clear', methods=['DELETE'])
+@require_api_key
+def clear_tasks():
+    """Clear all tasks (or filtered by status)."""
+    try:
+        status_filter = request.args.get('status', 'all')
+        
+        with get_db() as conn:
+            cursor = conn.cursor()
+            
+            if status_filter == 'all':
+                cursor.execute('DELETE FROM tasks')
+                cursor.execute('DELETE FROM task_logs')
+            else:
+                # Delete tasks with specific status and their logs
+                cursor.execute('SELECT id FROM tasks WHERE status = ?', (status_filter,))
+                task_ids = [row[0] for row in cursor.fetchall()]
+                if task_ids:
+                    placeholders = ','.join(['?'] * len(task_ids))
+                    cursor.execute(f'DELETE FROM task_logs WHERE task_id IN ({placeholders})', task_ids)
+                cursor.execute('DELETE FROM tasks WHERE status = ?', (status_filter,))
+            
+            deleted_count = cursor.rowcount
+        
+        return jsonify({
+            "message": f"Cleared {deleted_count} tasks",
+            "status_filter": status_filter,
+            "deleted_count": deleted_count
+        }), 200
+        
+    except Exception as e:
+        return jsonify({
+            "error": "Internal server error",
+            "message": str(e)
+        }), 500
+
+
+@app.route('/api/v1/devices', methods=['GET'])
+@require_api_key
+def list_devices():
+    """List all registered devices."""
+    try:
+        with get_db() as conn:
+            cursor = conn.cursor()
+            cursor.execute('''
+                SELECT id, name, description, last_seen, status, created_at
+                FROM devices
+                ORDER BY last_seen DESC
+            ''')
+            
+            devices = []
+            for row in cursor.fetchall():
+                devices.append(dict(row))
+            
+            return jsonify({
+                "devices": devices,
+                "count": len(devices)
+            }), 200
+        
+    except Exception as e:
+        return jsonify({
+            "error": "Internal server error",
+            "message": str(e)
+        }), 500
+
+
+@app.route('/api/v1/devices', methods=['POST'])
+@require_api_key
+def register_device():
+    """Register a new device."""
+    try:
+        data = request.get_json()
+        
+        if not data:
+            return jsonify({
+                "error": "Invalid request",
+                "message": "JSON body required"
+            }), 400
+        
+        device_id = data.get('id') or str(uuid.uuid4())
+        name = data.get('name', f"Device {device_id[:8]}")
+        description = data.get('description', '')
+        
+        with get_db() as conn:
+            cursor = conn.cursor()
+            
+            # Check if device exists
+            cursor.execute('SELECT id FROM devices WHERE id = ?', (device_id,))
+            if cursor.fetchone():
+                # Update existing device
+                cursor.execute('''
+                    UPDATE devices 
+                    SET name = ?, description = ?, last_seen = strftime('%s', 'now'), status = 'online'
+                    WHERE id = ?
+                ''', (name, description, device_id))
+            else:
+                # Insert new device
+                cursor.execute('''
+                    INSERT INTO devices (id, name, description, last_seen, status)
+                    VALUES (?, ?, ?, strftime('%s', 'now'), 'online')
+                ''', (device_id, name, description))
+        
+        return jsonify({
+            "device_id": device_id,
+            "name": name,
+            "message": "Device registered successfully"
+        }), 201
+        
+    except Exception as e:
+        return jsonify({
+            "error": "Internal server error",
+            "message": str(e)
+        }), 500
+
+
+@app.route('/api/v1/devices/<device_id>/heartbeat', methods=['POST'])
+@require_api_key
+def device_heartbeat(device_id: str):
+    """Update device heartbeat (called by devices to stay online)."""
+    try:
+        with get_db() as conn:
+            cursor = conn.cursor()
+            cursor.execute('''
+                UPDATE devices 
+                SET last_seen = strftime('%s', 'now'), status = 'online'
+                WHERE id = ?
+            ''', (device_id,))
+            
+            if cursor.rowcount == 0:
+                return jsonify({
+                    "error": "Device not found",
+                    "device_id": device_id
+                }), 404
+        
+        return jsonify({
+            "device_id": device_id,
+            "status": "online",
+            "message": "Heartbeat updated"
+        }), 200
+        
+    except Exception as e:
+        return jsonify({
+            "error": "Internal server error",
+            "message": str(e)
+        }), 500
+
+
+@app.route('/api/v1/tasks/<task_id>/logs', methods=['GET'])
+@require_api_key
+def get_task_logs(task_id: str):
+    """Get logs for a specific task."""
+    try:
+        limit = request.args.get('limit', type=int) or 1000
+        
+        with get_db() as conn:
+            cursor = conn.cursor()
+            cursor.execute('''
+                SELECT timestamp, level, message
+                FROM task_logs
+                WHERE task_id = ?
+                ORDER BY timestamp DESC
+                LIMIT ?
+            ''', (task_id, limit))
+            
+            logs = []
+            for row in cursor.fetchall():
+                logs.append({
+                    "timestamp": row[0],
+                    "level": row[1],
+                    "message": row[2]
+                })
+            
+            # Reverse to show oldest first
+            logs.reverse()
+            
+            return jsonify({
+                "task_id": task_id,
+                "logs": logs,
+                "count": len(logs)
+            }), 200
+        
+    except Exception as e:
+        return jsonify({
+            "error": "Internal server error",
+            "message": str(e)
+        }), 500
+
+
+@app.route('/api/v1/tasks/<task_id>/logs', methods=['POST'])
+@require_api_key
+def add_task_log(task_id: str):
+    """Add a log entry for a task (called by service)."""
+    try:
+        data = request.get_json()
+        
+        if not data:
+            return jsonify({
+                "error": "Invalid request",
+                "message": "JSON body required"
+            }), 400
+        
+        level = data.get('level', 'INFO')
+        message = data.get('message', '')
+        
+        with get_db() as conn:
+            cursor = conn.cursor()
+            cursor.execute('''
+                INSERT INTO task_logs (task_id, level, message, timestamp)
+                VALUES (?, ?, ?, strftime('%s', 'now'))
+            ''', (task_id, level, message))
+        
+        return jsonify({
+            "task_id": task_id,
+            "message": "Log added successfully"
+        }), 201
         
     except Exception as e:
         return jsonify({

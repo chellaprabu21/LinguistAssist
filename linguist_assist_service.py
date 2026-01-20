@@ -70,6 +70,7 @@ class LinguistAssistService:
         self.poll_interval = poll_interval
         self.agent = None
         self.api_url, self.api_key = self.load_cloud_config()
+        self.device_id = None
         logger.info(f"Initializing LinguistAssist service with model: {model_name}")
         logger.info(f"Cloud API URL: {self.api_url}")
     
@@ -167,7 +168,7 @@ class LinguistAssistService:
             return False
     
     def fetch_queued_tasks(self) -> list:
-        """Fetch queued tasks from cloud API."""
+        """Fetch queued tasks from cloud API (for this device or unassigned)."""
         if not self.api_url or not self.api_key:
             return []
         
@@ -176,6 +177,7 @@ class LinguistAssistService:
                 "X-API-Key": self.api_key,
                 "Content-Type": "application/json"
             }
+            # Fetch tasks that are queued and either unassigned or assigned to this device
             response = requests.get(
                 f"{self.api_url}/api/v1/tasks?status=queued",
                 headers=headers,
@@ -183,10 +185,87 @@ class LinguistAssistService:
             )
             response.raise_for_status()
             data = response.json()
-            return data.get("tasks", [])
+            tasks = data.get("tasks", [])
+            
+            # Filter: only process tasks assigned to this device or unassigned (device_id is None)
+            if self.device_id:
+                tasks = [t for t in tasks if t.get("device_id") is None or t.get("device_id") == self.device_id]
+            else:
+                # If device not registered, only take unassigned tasks
+                tasks = [t for t in tasks if t.get("device_id") is None]
+            
+            return tasks
         except requests.exceptions.RequestException as e:
             logger.error(f"Failed to fetch tasks from API: {e}")
             return []
+    
+    def send_log(self, task_id: str, level: str, message: str):
+        """Send log entry to cloud API."""
+        if not self.api_url or not self.api_key:
+            return False
+        
+        try:
+            headers = {
+                "X-API-Key": self.api_key,
+                "Content-Type": "application/json"
+            }
+            requests.post(
+                f"{self.api_url}/api/v1/tasks/{task_id}/logs",
+                json={"level": level, "message": message},
+                headers=headers,
+                timeout=5
+            )
+            return True
+        except:
+            return False
+    
+    def register_device(self):
+        """Register this service as a device."""
+        if not self.api_url or not self.api_key:
+            return None
+        
+        try:
+            import socket
+            import platform
+            
+            device_id = f"{socket.gethostname()}-{platform.system()}"
+            device_name = f"{socket.gethostname()} ({platform.system()})"
+            
+            headers = {
+                "X-API-Key": self.api_key,
+                "Content-Type": "application/json"
+            }
+            response = requests.post(
+                f"{self.api_url}/api/v1/devices",
+                json={"id": device_id, "name": device_name, "description": "LinguistAssist Service"},
+                headers=headers,
+                timeout=10
+            )
+            response.raise_for_status()
+            self.device_id = device_id
+            logger.info(f"Registered as device: {device_id}")
+            return device_id
+        except Exception as e:
+            logger.warning(f"Failed to register device: {e}")
+            return None
+    
+    def send_heartbeat(self):
+        """Send heartbeat to keep device status online."""
+        if not self.api_url or not self.api_key or not hasattr(self, 'device_id'):
+            return
+        
+        try:
+            headers = {
+                "X-API-Key": self.api_key,
+                "Content-Type": "application/json"
+            }
+            requests.post(
+                f"{self.api_url}/api/v1/devices/{self.device_id}/heartbeat",
+                headers=headers,
+                timeout=5
+            )
+        except:
+            pass
     
     def update_task_status(self, task_id: str, status: str, result: Optional[Dict] = None):
         """Update task status in cloud API."""
@@ -269,10 +348,36 @@ class LinguistAssistService:
         # Update status to processing
         self.update_task_status(task_id, "processing")
         
-        # Execute task
+        # Execute task with logging
         try:
             logger.info(f"Executing goal: {goal} (max_steps: {max_steps})")
-            success = self.agent.execute_task(goal, max_steps=max_steps)
+            self.send_log(task_id, "INFO", f"Starting task execution: {goal}")
+            
+            # Create a custom logger that sends to API
+            import logging
+            class APILogHandler(logging.Handler):
+                def __init__(self, service, task_id):
+                    super().__init__()
+                    self.service = service
+                    self.task_id = task_id
+                
+                def emit(self, record):
+                    try:
+                        level = record.levelname
+                        message = self.format(record)
+                        self.service.send_log(self.task_id, level, message)
+                    except:
+                        pass
+            
+            # Add API log handler temporarily
+            api_handler = APILogHandler(self, task_id)
+            api_handler.setLevel(logging.INFO)
+            logger.addHandler(api_handler)
+            
+            try:
+                success = self.agent.execute_task(goal, max_steps=max_steps)
+            finally:
+                logger.removeHandler(api_handler)
             
             result = {
                 "id": task_id,
@@ -313,17 +418,32 @@ class LinguistAssistService:
             logger.error("Failed to initialize agent, exiting")
             return 1
         
+        # Register as device
+        if self.api_url and self.api_key:
+            self.register_device()
+        
         logger.info("LinguistAssist service started")
         if self.api_url:
             logger.info(f"Polling cloud API: {self.api_url}")
+            if self.device_id:
+                logger.info(f"Registered as device: {self.device_id}")
         else:
             logger.warning("No API configuration - falling back to local file queue")
             logger.info(f"Monitoring local task queue: {QUEUE_DIR}")
         logger.info(f"Poll interval: {self.poll_interval} seconds")
         
+        # Send heartbeat every 30 seconds
+        last_heartbeat = time.time()
+        
         # Main loop
         while running:
             try:
+                # Send heartbeat periodically
+                if self.api_url and self.api_key and hasattr(self, 'device_id') and self.device_id:
+                    if time.time() - last_heartbeat > 30:
+                        self.send_heartbeat()
+                        last_heartbeat = time.time()
+                
                 if self.api_url and self.api_key:
                     # Poll cloud API for queued tasks
                     tasks = self.fetch_queued_tasks()

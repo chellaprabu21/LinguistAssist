@@ -756,23 +756,33 @@ class LinguistAssist:
                                     print(f"[LinguistAssist] Coordinates are very similar to recent clicks. Waiting longer and trying again...")
                                     time.sleep(2)  # Longer wait
                             
-                            print(f"[LinguistAssist] Clicking at ({pixel_x}, {pixel_y})...")
+                            # Add small random offset to improve click accuracy (within 3 pixels)
+                            import random
+                            offset_x = random.randint(-3, 3)
+                            offset_y = random.randint(-3, 3)
+                            click_x = max(0, min(pixel_x + offset_x, self.coordinate_mapper.logical_width - 1))
+                            click_y = max(0, min(pixel_y + offset_y, self.coordinate_mapper.logical_height - 1))
+                            
+                            print(f"[LinguistAssist] Clicking at ({click_x}, {click_y}) (mapped from normalized {normalized_x:.1f}, {normalized_y:.1f})...")
+                            
                             # Try GUI action service first (for Launch Agent compatibility)
                             try:
                                 import requests
                                 response = requests.post(
                                     "http://127.0.0.1:8081/click",
-                                    json={"x": pixel_x, "y": pixel_y},
+                                    json={"x": click_x, "y": click_y},
                                     timeout=2
                                 )
                                 if response.status_code == 200 and response.json().get("success"):
                                     print(f"[LinguistAssist] Click executed via GUI service")
                                 else:
-                                    # Fallback to direct pyautogui
-                                    pyautogui.click(pixel_x, pixel_y)
+                                    # Fallback to direct pyautogui with slight delay for better accuracy
+                                    time.sleep(0.1)
+                                    pyautogui.click(click_x, click_y)
                             except Exception:
-                                # Fallback to direct pyautogui
-                                pyautogui.click(pixel_x, pixel_y)
+                                # Fallback to direct pyautogui with slight delay for better accuracy
+                                time.sleep(0.1)
+                                pyautogui.click(click_x, click_y)
                             
                             # Wait a bit for the click to register
                             time.sleep(0.3)

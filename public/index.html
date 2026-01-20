@@ -463,6 +463,12 @@
                 <h2>📝 Submit New Task</h2>
                 <form id="task-form">
                     <div class="form-group">
+                        <label for="device-select">Device</label>
+                        <select id="device-select" style="width: 100%; padding: 12px; background: var(--bg-light); border: 1px solid var(--border); border-radius: 8px; color: var(--text); font-size: 1rem; font-family: inherit; cursor: pointer;">
+                            <option value="">Any Available Device</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
                         <label for="goal">Task Goal</label>
                         <textarea id="goal" placeholder="e.g., Open Notes app and create a new note" required></textarea>
                     </div>
@@ -478,7 +484,12 @@
             </div>
 
             <div class="card">
-                <h2>📊 Task List</h2>
+                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px;">
+                    <h2 style="margin: 0;">📊 Task List</h2>
+                    <button class="btn btn-danger" onclick="clearTasks()" style="padding: 8px 16px; font-size: 0.9rem;">
+                        🗑️ Clear Tasks
+                    </button>
+                </div>
                 <div class="filter-tabs">
                     <div class="filter-tab active" data-filter="all">All</div>
                     <div class="filter-tab" data-filter="queued">Queued</div>
@@ -498,6 +509,14 @@
         <div class="card" id="task-details-card" style="display: none;">
             <h2>📋 Task Details</h2>
             <div id="task-details-content"></div>
+            <div style="margin-top: 20px;">
+                <h3 style="margin-bottom: 15px;">📜 Live Logs</h3>
+                <div class="logs-viewer" id="task-logs" style="max-height: 400px; overflow-y: auto;">
+                    <div class="empty-state" style="padding: 20px;">
+                        <div>No logs yet...</div>
+                    </div>
+                </div>
+            </div>
         </div>
     </div>
 
@@ -510,6 +529,8 @@
         let currentFilter = 'all';
         let selectedTaskId = null;
         let refreshInterval = null;
+        let logsInterval = null;
+        let devices = [];
 
         // Initialize
         if (!API_KEY) {
@@ -519,6 +540,9 @@
                 location.reload();
             }
         }
+        
+        // Load devices
+        loadDevices();
 
         // API helpers
         async function apiCall(endpoint, options = {}) {
@@ -560,9 +584,10 @@
             submitBtn.innerHTML = '<span class="loading"></span> Submitting...';
             
             try {
+                const deviceId = document.getElementById('device-select').value || null;
                 const result = await apiCall('/tasks', {
                     method: 'POST',
-                    body: JSON.stringify({ goal, max_steps: maxSteps })
+                    body: JSON.stringify({ goal, max_steps: maxSteps, device_id: deviceId })
                 });
                 
                 showNotification(`Task submitted: ${result.task_id}`, 'success');
@@ -639,6 +664,7 @@
                         <div class="task-goal">${goal}</div>
                         <div class="task-meta">
                             <span>Max Steps: ${task.max_steps || 20}</span>
+                            <span>Device: ${task.device_id ? task.device_id.substring(0, 12) + '...' : 'Any'}</span>
                             <span>Created: ${timestamp}</span>
                         </div>
                     </div>
@@ -646,11 +672,83 @@
             }).join('');
         }
 
+        // Load devices
+        async function loadDevices() {
+            try {
+                const data = await apiCall('/devices');
+                devices = data.devices || [];
+                
+                const select = document.getElementById('device-select');
+                select.innerHTML = '<option value="">Any Available Device</option>';
+                devices.forEach(device => {
+                    const option = document.createElement('option');
+                    option.value = device.id;
+                    option.textContent = `${device.name} (${device.status})`;
+                    select.appendChild(option);
+                });
+            } catch (error) {
+                console.error('Failed to load devices:', error);
+            }
+        }
+        
+        // Clear tasks
+        async function clearTasks() {
+            const status = currentFilter === 'all' ? 'all' : currentFilter;
+            const confirmMsg = status === 'all' 
+                ? 'Are you sure you want to delete ALL tasks? This cannot be undone!'
+                : `Are you sure you want to delete all ${status} tasks?`;
+            
+            if (!confirm(confirmMsg)) return;
+            
+            try {
+                const result = await apiCall(`/tasks/clear?status=${status}`, { method: 'DELETE' });
+                showNotification(`Cleared ${result.deleted_count} tasks`, 'success');
+                loadTasks();
+            } catch (error) {
+                showNotification(`Failed to clear tasks: ${error.message}`, 'error');
+            }
+        }
+        
+        // Load task logs
+        async function loadTaskLogs(taskId) {
+            try {
+                const data = await apiCall(`/tasks/${taskId}/logs`);
+                const logs = data.logs || [];
+                
+                const logsContainer = document.getElementById('task-logs');
+                if (logs.length === 0) {
+                    logsContainer.innerHTML = '<div class="empty-state" style="padding: 20px;"><div>No logs yet...</div></div>';
+                    return;
+                }
+                
+                logsContainer.innerHTML = logs.map(log => {
+                    const time = new Date(log.timestamp * 1000).toLocaleTimeString();
+                    return `
+                        <div class="log-entry">
+                            <span class="log-time">${time}</span>
+                            <span class="log-level ${log.level}">${log.level}</span>
+                            <span>${log.message}</span>
+                        </div>
+                    `;
+                }).join('');
+                
+                // Auto-scroll to bottom
+                logsContainer.scrollTop = logsContainer.scrollHeight;
+            } catch (error) {
+                console.error('Failed to load logs:', error);
+            }
+        }
+        
         // Show task details
         async function showTaskDetails(taskId) {
             selectedTaskId = taskId;
             const detailsCard = document.getElementById('task-details-card');
             const detailsContent = document.getElementById('task-details-content');
+            
+            // Clear previous logs interval
+            if (logsInterval) {
+                clearInterval(logsInterval);
+            }
             
             try {
                 const task = await apiCall(`/tasks/${taskId}`);
@@ -673,6 +771,9 @@
                             <strong>Max Steps:</strong> ${task.max_steps}
                         </div>
                         <div style="margin-bottom: 10px;">
+                            <strong>Device:</strong> ${task.device_id || 'Any Available'}
+                        </div>
+                        <div style="margin-bottom: 10px;">
                             <strong>Created:</strong> ${new Date(task.timestamp * 1000).toLocaleString()}
                         </div>
                     </div>
@@ -688,6 +789,12 @@
                         <button class="btn btn-danger" onclick="cancelTask('${taskId}')">Cancel Task</button>
                     ` : ''}
                 `;
+                
+                // Load logs and start auto-refresh
+                loadTaskLogs(taskId);
+                if (task.status === 'processing' || task.status === 'queued') {
+                    logsInterval = setInterval(() => loadTaskLogs(taskId), 2000);
+                }
                 
                 detailsCard.scrollIntoView({ behavior: 'smooth' });
             } catch (error) {
@@ -721,11 +828,16 @@
 
         // Auto-refresh
         loadTasks();
-        refreshInterval = setInterval(loadTasks, 5000);
+        loadDevices();
+        refreshInterval = setInterval(() => {
+            loadTasks();
+            loadDevices();
+        }, 5000);
 
         // Make functions global
         window.showTaskDetails = showTaskDetails;
         window.cancelTask = cancelTask;
+        window.clearTasks = clearTasks;
     </script>
 </body>
 </html>
