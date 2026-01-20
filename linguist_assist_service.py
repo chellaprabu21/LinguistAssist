@@ -167,8 +167,39 @@ class LinguistAssistService:
             logger.error(f"Failed to initialize agent: {e}")
             return False
     
+    def claim_task(self) -> Optional[Dict]:
+        """Atomically claim a queued task for processing (prevents race conditions)."""
+        if not self.api_url or not self.api_key or not self.device_id:
+            return None
+        
+        try:
+            headers = {
+                "X-API-Key": self.api_key,
+                "Content-Type": "application/json"
+            }
+            # Atomically claim a task - this prevents multiple services from picking the same task
+            response = requests.post(
+                f"{self.api_url}/api/v1/tasks/claim",
+                json={"device_id": self.device_id},
+                headers=headers,
+                timeout=10
+            )
+            response.raise_for_status()
+            data = response.json()
+            task = data.get("task")
+            
+            if task:
+                logger.info(f"Claimed task: {task.get('id')} - {task.get('goal')}")
+                return task
+            
+            return None
+        except requests.exceptions.RequestException as e:
+            logger.error(f"Failed to claim task from API: {e}")
+            return None
+    
     def fetch_queued_tasks(self) -> list:
         """Fetch queued tasks from cloud API (for this device or unassigned)."""
+        # This is now only used for fallback - prefer claim_task() for atomic operations
         if not self.api_url or not self.api_key:
             return []
         
@@ -345,8 +376,10 @@ class LinguistAssistService:
             self.update_task_status(task_id, "error", {"error": "No goal specified"})
             return False
         
-        # Update status to processing
-        self.update_task_status(task_id, "processing")
+        # Status should already be set to processing by claim_task()
+        # But update it just in case (for fallback mode)
+        if task.get("status") != "processing":
+            self.update_task_status(task_id, "processing")
         
         # Execute task with logging
         try:
@@ -445,16 +478,25 @@ class LinguistAssistService:
                         last_heartbeat = time.time()
                 
                 if self.api_url and self.api_key:
-                    # Poll cloud API for queued tasks
-                    tasks = self.fetch_queued_tasks()
-                    
-                    if tasks:
-                        # Process tasks one at a time
-                        task = tasks[0]
-                        self.process_task(task)
+                    # Try to atomically claim a task (prevents race conditions)
+                    if self.device_id:
+                        task = self.claim_task()
+                        if task:
+                            self.process_task(task)
+                        else:
+                            # No tasks available, sleep
+                            time.sleep(self.poll_interval)
                     else:
-                        # No tasks, sleep
-                        time.sleep(self.poll_interval)
+                        # Fallback: fetch and process (less safe, but works if device not registered)
+                        tasks = self.fetch_queued_tasks()
+                        if tasks:
+                            task = tasks[0]
+                            # Manually update status to processing before processing
+                            self.update_task_status(task['id'], 'processing')
+                            self.process_task(task)
+                        else:
+                            # No tasks, sleep
+                            time.sleep(self.poll_interval)
                 else:
                     # Fallback to local file queue
                     task_files = list(QUEUE_DIR.glob("*.json"))

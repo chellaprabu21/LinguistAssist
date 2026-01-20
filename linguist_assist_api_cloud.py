@@ -711,6 +711,79 @@ def add_task_log(task_id: str):
         }), 500
 
 
+@app.route('/api/v1/tasks/claim', methods=['POST'])
+@require_api_key
+def claim_task():
+    """Atomically claim a queued task for processing (prevents race conditions)."""
+    try:
+        data = request.get_json() or {}
+        device_id = data.get('device_id')
+        
+        if not device_id:
+            return jsonify({
+                "error": "Invalid request",
+                "message": "device_id is required"
+            }), 400
+        
+        with get_db() as conn:
+            cursor = conn.cursor()
+            
+            # Find a queued task to claim
+            cursor.execute('''
+                SELECT id, goal, max_steps, status, timestamp, device_id
+                FROM tasks 
+                WHERE status = 'queued' 
+                AND (device_id IS NULL OR device_id = ?)
+                ORDER BY timestamp ASC 
+                LIMIT 1
+            ''', (device_id,))
+            
+            row = cursor.fetchone()
+            
+            if not row:
+                # No tasks available
+                return jsonify({
+                    "message": "No tasks available",
+                    "task": None
+                }), 200
+            
+            task_id = row[0]
+            
+            # Atomically claim the task: set status to processing AND assign device_id
+            # Only succeeds if task is still queued (prevents race conditions)
+            cursor.execute('''
+                UPDATE tasks 
+                SET status = 'processing', device_id = ?, updated_at = strftime('%s', 'now')
+                WHERE id = ? AND status = 'queued'
+            ''', (device_id, task_id))
+            
+            if cursor.rowcount == 0:
+                # Task was already claimed by another service
+                return jsonify({
+                    "message": "Task already claimed by another device",
+                    "task": None
+                }), 200
+            
+            # Fetch the updated task
+            cursor.execute('''
+                SELECT id, goal, max_steps, status, timestamp, device_id
+                FROM tasks WHERE id = ?
+            ''', (task_id,))
+            
+            row = cursor.fetchone()
+            task = dict(row)
+            return jsonify({
+                "message": "Task claimed successfully",
+                "task": task
+            }), 200
+        
+    except Exception as e:
+        return jsonify({
+            "error": "Internal server error",
+            "message": str(e)
+        }), 500
+
+
 @app.route('/api/v1/tasks/<task_id>/result', methods=['PUT'])
 @require_api_key
 def update_task_result(task_id: str):
