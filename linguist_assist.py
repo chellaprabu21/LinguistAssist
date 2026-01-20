@@ -763,26 +763,90 @@ class LinguistAssist:
                             click_x = max(0, min(pixel_x + offset_x, self.coordinate_mapper.logical_width - 1))
                             click_y = max(0, min(pixel_y + offset_y, self.coordinate_mapper.logical_height - 1))
                             
-                            print(f"[LinguistAssist] Clicking at ({click_x}, {click_y}) (mapped from normalized {normalized_x:.1f}, {normalized_y:.1f})...")
+                            print(f"[LinguistAssist] Target click location: ({click_x}, {click_y}) (mapped from normalized {normalized_x:.1f}, {normalized_y:.1f})...")
                             
-                            # Try GUI action service first (for Launch Agent compatibility)
+                            # Verify and adjust mouse position before clicking
+                            max_retries = 3
+                            verified_x, verified_y = click_x, click_y
+                            
+                            for attempt in range(max_retries):
+                                # Move mouse to target location
+                                try:
+                                    import requests
+                                    # Try GUI action service first
+                                    move_response = requests.post(
+                                        "http://127.0.0.1:8081/move",
+                                        json={"x": verified_x, "y": verified_y},
+                                        timeout=2
+                                    )
+                                    if move_response.status_code == 200:
+                                        move_data = move_response.json()
+                                        if move_data.get("success"):
+                                            actual_pos = move_data.get("actual_position", {})
+                                            actual_x = actual_pos.get("x", verified_x)
+                                            actual_y = actual_pos.get("y", verified_y)
+                                            distance = move_data.get("distance", 0)
+                                            
+                                            if distance <= 5:  # Within 5 pixels is acceptable
+                                                print(f"[LinguistAssist] ✓ Mouse verified at ({actual_x}, {actual_y}), distance: {distance:.1f}px")
+                                                verified_x, verified_y = actual_x, actual_y
+                                                break
+                                            else:
+                                                print(f"[LinguistAssist] Mouse position mismatch: expected ({verified_x}, {verified_y}), actual ({actual_x}, {actual_y}), distance: {distance:.1f}px")
+                                                if attempt < max_retries - 1:
+                                                    # Adjust based on feedback
+                                                    adjust_x = verified_x - actual_x
+                                                    adjust_y = verified_y - actual_y
+                                                    verified_x = max(0, min(int(verified_x + adjust_x), self.coordinate_mapper.logical_width - 1))
+                                                    verified_y = max(0, min(int(verified_y + adjust_y), self.coordinate_mapper.logical_height - 1))
+                                                    print(f"[LinguistAssist] Adjusting target to ({verified_x}, {verified_y}) based on feedback...")
+                                                    time.sleep(0.2)
+                                    else:
+                                        # Fallback: use pyautogui directly
+                                        pyautogui.moveTo(verified_x, verified_y, duration=0.2)
+                                        time.sleep(0.1)
+                                        current_x, current_y = pyautogui.position()
+                                        distance = ((current_x - verified_x) ** 2 + (current_y - verified_y) ** 2) ** 0.5
+                                        if distance <= 5:
+                                            verified_x, verified_y = current_x, current_y
+                                            break
+                                except Exception:
+                                    # Fallback: use pyautogui directly
+                                    pyautogui.moveTo(verified_x, verified_y, duration=0.2)
+                                    time.sleep(0.1)
+                                    current_x, current_y = pyautogui.position()
+                                    distance = ((current_x - verified_x) ** 2 + (current_y - verified_y) ** 2) ** 0.5
+                                    if distance <= 5:
+                                        verified_x, verified_y = current_x, current_y
+                                        break
+                                    elif attempt < max_retries - 1:
+                                        # Adjust based on feedback
+                                        adjust_x = verified_x - current_x
+                                        adjust_y = verified_y - current_y
+                                        verified_x = max(0, min(int(verified_x + adjust_x), self.coordinate_mapper.logical_width - 1))
+                                        verified_y = max(0, min(int(verified_y + adjust_y), self.coordinate_mapper.logical_height - 1))
+                                        time.sleep(0.2)
+                            
+                            # Perform the click at verified position
+                            print(f"[LinguistAssist] Clicking at verified position ({verified_x}, {verified_y})...")
                             try:
                                 import requests
-                                response = requests.post(
+                                click_response = requests.post(
                                     "http://127.0.0.1:8081/click",
-                                    json={"x": click_x, "y": click_y},
+                                    json={"x": verified_x, "y": verified_y},
                                     timeout=2
                                 )
-                                if response.status_code == 200 and response.json().get("success"):
-                                    print(f"[LinguistAssist] Click executed via GUI service")
+                                if click_response.status_code == 200:
+                                    click_data = click_response.json()
+                                    if click_data.get("success"):
+                                        actual_click = click_data.get("actual", {})
+                                        print(f"[LinguistAssist] ✓ Click executed via GUI service at ({actual_click.get('x', verified_x)}, {actual_click.get('y', verified_y)})")
+                                    else:
+                                        pyautogui.click(verified_x, verified_y)
                                 else:
-                                    # Fallback to direct pyautogui with slight delay for better accuracy
-                                    time.sleep(0.1)
-                                    pyautogui.click(click_x, click_y)
+                                    pyautogui.click(verified_x, verified_y)
                             except Exception:
-                                # Fallback to direct pyautogui with slight delay for better accuracy
-                                time.sleep(0.1)
-                                pyautogui.click(click_x, click_y)
+                                pyautogui.click(verified_x, verified_y)
                             
                             # Wait a bit for the click to register
                             time.sleep(0.3)

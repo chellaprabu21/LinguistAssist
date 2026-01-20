@@ -125,7 +125,7 @@ class ScreenshotHandler(BaseHTTPRequestHandler):
     
     def do_POST(self):
         """Handle POST requests."""
-        if self.path == "/click":
+        if self.path == "/move":
             try:
                 content_length = int(self.headers.get('Content-Length', 0))
                 post_data = self.rfile.read(content_length)
@@ -134,12 +134,68 @@ class ScreenshotHandler(BaseHTTPRequestHandler):
                 x = int(data.get('x', 0))
                 y = int(data.get('y', 0))
                 
-                # Move to position first, then click for better accuracy
-                pyautogui.moveTo(x, y, duration=0.1)
+                # Move to position
+                pyautogui.moveTo(x, y, duration=0.2)
                 time.sleep(0.1)  # Small delay to ensure mouse is positioned
-                pyautogui.click(x, y)
                 
-                response = {"success": True, "message": f"Clicked at ({x}, {y})"}
+                # Verify position
+                current_x, current_y = pyautogui.position()
+                distance = ((current_x - x) ** 2 + (current_y - y) ** 2) ** 0.5
+                
+                response = {
+                    "success": True,
+                    "message": f"Moved to ({x}, {y})",
+                    "actual_position": {"x": current_x, "y": current_y},
+                    "distance": distance
+                }
+                self.send_response(200)
+                self.send_header("Content-type", "application/json")
+                self.end_headers()
+                self.wfile.write(json.dumps(response).encode())
+                
+            except Exception as e:
+                error_response = {"success": False, "error": str(e)}
+                self.send_response(500)
+                self.send_header("Content-type", "application/json")
+                self.end_headers()
+                self.wfile.write(json.dumps(error_response).encode())
+        
+        elif self.path == "/click":
+            try:
+                content_length = int(self.headers.get('Content-Length', 0))
+                post_data = self.rfile.read(content_length)
+                data = json.loads(post_data.decode('utf-8'))
+                
+                x = int(data.get('x', 0))
+                y = int(data.get('y', 0))
+                
+                # Move to position first, then verify
+                pyautogui.moveTo(x, y, duration=0.2)
+                time.sleep(0.1)  # Small delay to ensure mouse is positioned
+                
+                # Verify mouse is at expected position
+                current_x, current_y = pyautogui.position()
+                distance = ((current_x - x) ** 2 + (current_y - y) ** 2) ** 0.5
+                
+                if distance > 5:
+                    # Position mismatch - adjust
+                    print(f"[ScreenshotService] Mouse position mismatch: expected ({x}, {y}), actual ({current_x}, {current_y}), distance: {distance:.1f}px")
+                    # Try to adjust
+                    pyautogui.moveTo(x, y, duration=0.1)
+                    time.sleep(0.1)
+                    current_x, current_y = pyautogui.position()
+                    distance = ((current_x - x) ** 2 + (current_y - y) ** 2) ** 0.5
+                
+                # Click at verified/adjusted position
+                pyautogui.click(current_x, current_y)
+                
+                response = {
+                    "success": True,
+                    "message": f"Clicked at ({current_x}, {current_y})",
+                    "target": {"x": x, "y": y},
+                    "actual": {"x": current_x, "y": current_y},
+                    "distance": distance
+                }
                 self.send_response(200)
                 self.send_header("Content-type", "application/json")
                 self.end_headers()
