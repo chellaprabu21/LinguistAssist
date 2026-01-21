@@ -21,15 +21,26 @@ from flask_cors import CORS
 import os
 
 # Database setup
+# On Vercel, only /tmp is writable, so use that for the database
 DB_FILE = os.getenv('DATABASE_URL', 'sqlite:///linguist_assist.db').replace('sqlite:///', '')
 if DB_FILE.startswith('/'):
     DB_PATH = DB_FILE
+elif os.getenv('VERCEL'):
+    # Vercel: use /tmp (only writable location)
+    DB_PATH = os.path.join('/tmp', DB_FILE)
 else:
-    # For cloud platforms, use a persistent directory
+    # For other cloud platforms, use a persistent directory
     DB_PATH = os.path.join(os.getenv('HOME', '/tmp'), DB_FILE)
 
 # Ensure directory exists
-os.makedirs(os.path.dirname(DB_PATH) if os.path.dirname(DB_PATH) else '.', exist_ok=True)
+try:
+    db_dir = os.path.dirname(DB_PATH) if os.path.dirname(DB_PATH) else '.'
+    if db_dir != '.':
+        os.makedirs(db_dir, exist_ok=True)
+except Exception as e:
+    # If directory creation fails, use /tmp as fallback
+    print(f"Warning: Could not create database directory {db_dir}: {e}")
+    DB_PATH = os.path.join('/tmp', os.path.basename(DB_FILE))
 
 # API configuration
 API_KEYS_ENV = os.getenv('API_KEYS', '')  # Comma-separated API keys
