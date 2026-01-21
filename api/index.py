@@ -15,31 +15,18 @@ os.environ['VERCEL'] = '1'
 try:
     from linguist_assist_api_cloud import app, init_database
     
-    # Defer database initialization to first request (lazy initialization)
-    # This prevents blocking during import which can cause Vercel timeouts
-    @app.before_first_request
-    def initialize_db():
-        if not hasattr(app, '_db_initialized'):
-            try:
-                init_database()
-                app._db_initialized = True
-                print("Database initialized successfully")
-            except Exception as e:
-                print(f"Database initialization warning: {e}")
-                import traceback
-                print(f"Traceback: {traceback.format_exc()}")
-                app._db_initialized = True
-    
-    # For Vercel, initialize immediately but don't fail if it errors
-    # Vercel doesn't support @before_first_request decorator
+    # Initialize database on import (Vercel serverless functions)
+    # Use a flag to avoid re-initializing on every request
     if not hasattr(app, '_db_initialized'):
         try:
             init_database()
             app._db_initialized = True
             print("Database initialized successfully")
         except Exception as e:
-            # Don't fail - initialize on first request instead
+            # Don't fail - log error and try to initialize on first request
             print(f"Database initialization deferred: {e}")
+            import traceback
+            print(f"Traceback: {traceback.format_exc()}")
             app._db_initialized = False
     
     # Export the Flask app as 'handler' for Vercel's Python runtime
