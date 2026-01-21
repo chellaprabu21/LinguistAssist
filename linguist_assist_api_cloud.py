@@ -56,7 +56,8 @@ rate_limit_store = {}
 
 def init_database():
     """Initialize SQLite database with required tables."""
-    with get_db() as conn:
+    try:
+        with get_db() as conn:
         cursor = conn.cursor()
         
         # Tasks table
