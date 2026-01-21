@@ -154,13 +154,40 @@ class LinguistAssistService:
             logger.warning(f"Could not start screenshot service: {e}")
             return False
     
+    def load_gemini_api_key(self) -> Optional[str]:
+        """Load Gemini API key from file or environment."""
+        # Try to read from file
+        gemini_key_file = LOG_DIR / "gemini_api_key.txt"
+        try:
+            if gemini_key_file.exists():
+                with open(gemini_key_file, 'r') as f:
+                    api_key = f.read().strip()
+                    if api_key:
+                        return api_key
+        except Exception as e:
+            logger.warning(f"Could not read Gemini API key from file: {e}")
+        
+        # Try environment variable
+        api_key = os.getenv("GEMINI_API_KEY")
+        if api_key:
+            return api_key
+        
+        logger.error("No Gemini API key found! Check ~/.linguist_assist/gemini_api_key.txt or set GEMINI_API_KEY environment variable")
+        return None
+    
     def initialize_agent(self):
         """Initialize the LinguistAssist agent."""
         try:
             # Ensure screenshot service is running
             self.ensure_screenshot_service()
             
-            self.agent = LinguistAssist(model_name=self.model_name)
+            # Load Gemini API key
+            gemini_api_key = self.load_gemini_api_key()
+            if not gemini_api_key:
+                logger.error("Cannot initialize agent without Gemini API key")
+                return False
+            
+            self.agent = LinguistAssist(model_name=self.model_name, api_key=gemini_api_key)
             logger.info("LinguistAssist agent initialized successfully")
             return True
         except Exception as e:
@@ -498,23 +525,9 @@ class LinguistAssistService:
                             # No tasks, sleep
                             time.sleep(self.poll_interval)
                 else:
-                    # Fallback to local file queue
-                    task_files = list(QUEUE_DIR.glob("*.json"))
-                    
-                    if task_files:
-                        # Process tasks one at a time
-                        task_file = task_files[0]
-                        task = self.load_task(task_file)
-                        if task:
-                            self.process_task(task)
-                            # Remove processed file
-                            try:
-                                task_file.unlink()
-                            except:
-                                pass
-                    else:
-                        # No tasks, sleep
-                        time.sleep(self.poll_interval)
+                    logger.error("No API configuration found! Cannot fetch tasks from cloud API.")
+                    logger.error("Please configure cloud_config.json with api_url and api_key")
+                    time.sleep(self.poll_interval)
                     
             except KeyboardInterrupt:
                 logger.info("Interrupted by user")
