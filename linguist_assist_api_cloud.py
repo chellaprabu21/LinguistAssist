@@ -21,27 +21,15 @@ from flask_cors import CORS
 import os
 
 # Database setup
-# On Vercel and other serverless platforms, only /tmp is writable
 DB_FILE = os.getenv('DATABASE_URL', 'sqlite:///linguist_assist.db').replace('sqlite:///', '')
 if DB_FILE.startswith('/'):
     DB_PATH = DB_FILE
-elif os.getenv('VERCEL') or os.getenv('VERCEL_ENV') or os.getenv('NOW_REGION'):
-    # Vercel: use /tmp (only writable location)
-    DB_PATH = os.path.join('/tmp', os.path.basename(DB_FILE))
 else:
-    # For other cloud platforms, try /tmp first (serverless-friendly)
-    # Fall back to HOME if /tmp doesn't work
-    DB_PATH = os.path.join('/tmp', os.path.basename(DB_FILE))
+    # For cloud platforms, use /tmp (writable on Vercel and most serverless platforms)
+    DB_PATH = os.path.join('/tmp', DB_FILE)
 
-# Ensure directory exists (for /tmp, directory is always writable)
-try:
-    db_dir = os.path.dirname(DB_PATH) if os.path.dirname(DB_PATH) else '.'
-    if db_dir and db_dir != '.':
-        os.makedirs(db_dir, exist_ok=True)
-except Exception as e:
-    # If directory creation fails, use /tmp directly
-    print(f"Warning: Could not create database directory {db_dir}: {e}")
-    DB_PATH = os.path.join('/tmp', os.path.basename(DB_FILE))
+# Ensure directory exists
+os.makedirs(os.path.dirname(DB_PATH) if os.path.dirname(DB_PATH) else '.', exist_ok=True)
 
 # API configuration
 API_KEYS_ENV = os.getenv('API_KEYS', '')  # Comma-separated API keys
@@ -56,8 +44,7 @@ rate_limit_store = {}
 
 def init_database():
     """Initialize SQLite database with required tables."""
-    try:
-        with get_db() as conn:
+    with get_db() as conn:
         cursor = conn.cursor()
         
         # Tasks table
