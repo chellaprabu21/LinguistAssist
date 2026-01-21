@@ -547,11 +547,26 @@
         }
 
         .log-entry.step {
-            background: rgba(139, 92, 246, 0.05);
+            background: rgba(139, 92, 246, 0.08);
             padding: 12px;
             border-radius: 8px;
-            margin: 8px 0;
+            margin: 12px 0;
             border-left: 3px solid var(--primary);
+            box-shadow: 0 2px 8px rgba(139, 92, 246, 0.1);
+        }
+        
+        .log-entry.linguist-log {
+            color: var(--primary-light);
+        }
+        
+        .log-entry.coord-log {
+            color: var(--secondary);
+        }
+        
+        .log-entry.step .log-message {
+            display: flex;
+            flex-direction: column;
+            gap: 4px;
         }
 
         .log-time {
@@ -688,21 +703,21 @@
 
     <script>
         const API_URL = window.location.origin;
-        const API_KEY = new URLSearchParams(window.location.search).get('api_key') || localStorage.getItem('api_key') || '';
+        // Default API key for local development
+        const DEFAULT_API_KEY = 'mSawoFoDlUkNxi39RgpFJPUwxFOxdJ9TM3YAMsGKARs';
+        const API_KEY = new URLSearchParams(window.location.search).get('api_key') || 
+                        localStorage.getItem('api_key') || 
+                        DEFAULT_API_KEY;
+        
+        // Save to localStorage for future use
+        if (!localStorage.getItem('api_key')) {
+            localStorage.setItem('api_key', API_KEY);
+        }
         
         let currentFilter = 'all';
         let selectedTaskId = null;
         let refreshInterval = null;
         let logsInterval = null;
-
-        // Initialize
-        if (!API_KEY) {
-            const key = prompt('Enter your API key:');
-            if (key) {
-                localStorage.setItem('api_key', key);
-                location.reload();
-            }
-        }
         
         // API helpers
         async function apiCall(endpoint, options = {}) {
@@ -905,10 +920,10 @@
             }
         }
         
-        // Load task logs with step detection
+        // Load task logs with step detection and formatting
         async function loadTaskLogs(taskId) {
             try {
-                const data = await apiCall(`/tasks/${taskId}/logs?limit=1000`);
+                const data = await apiCall(`/tasks/${taskId}/logs?limit=2000`);
                 const logs = data.logs || [];
                 
                 const logsContainer = document.getElementById('task-logs');
@@ -917,36 +932,75 @@
                     return;
                 }
                 
-                // Group logs by steps and format nicely
+                // Format logs with better step detection and grouping
                 let formattedLogs = [];
                 let currentStep = null;
+                let stepLogs = [];
                 
-                logs.forEach(log => {
+                logs.forEach((log, index) => {
                     const time = new Date(log.timestamp * 1000).toLocaleTimeString();
                     const message = log.message || '';
                     
-                    // Detect step markers
-                    const stepMatch = message.match(/Step (\d+):/i) || message.match(/\[LinguistAssist\] Step (\d+)/i);
+                    // Detect step markers - multiple patterns
+                    const stepMatch = message.match(/Step (\d+):/i) || 
+                                     message.match(/\[LinguistAssist\] Step (\d+)/i) ||
+                                     message.match(/Step (\d+) of/i);
+                    
                     if (stepMatch) {
-                        if (currentStep) {
-                            formattedLogs.push(`</div>`);
+                        // Close previous step if exists
+                        if (currentStep !== null && stepLogs.length > 0) {
+                            formattedLogs.push(`<div class="log-entry step">`);
+                            formattedLogs.push(`<div class="log-time">${time}</div>`);
+                            formattedLogs.push(`<div class="log-level INFO">STEP ${currentStep}</div>`);
+                            formattedLogs.push(`<div class="log-message">`);
+                            stepLogs.forEach(stepLog => {
+                                formattedLogs.push(`<div style="margin-left: 12px; margin-top: 4px;">${escapeHtml(stepLog)}</div>`);
+                            });
+                            formattedLogs.push(`</div></div>`);
+                            stepLogs = [];
                         }
+                        
                         currentStep = stepMatch[1];
-                        formattedLogs.push(`<div class="log-entry step"><div class="log-time">${time}</div><div class="log-level INFO">STEP ${currentStep}</div><div class="log-message"><strong>${message}</strong></div></div>`);
+                        // Start new step - the step header itself
+                        stepLogs.push(message);
+                    } else if (currentStep !== null) {
+                        // Add to current step's logs
+                        stepLogs.push(message);
                     } else {
-                        // Regular log entry
+                        // Regular log entry (before any step starts)
+                        const level = log.level || 'INFO';
+                        const levelClass = level.toLowerCase();
+                        
+                        // Detect special log types for better formatting
+                        let logClass = '';
+                        if (message.includes('[LinguistAssist]')) {
+                            logClass = 'linguist-log';
+                        } else if (message.includes('[CoordinateMapper]')) {
+                            logClass = 'coord-log';
+                        }
+                        
                         formattedLogs.push(`
-                            <div class="log-entry">
+                            <div class="log-entry ${logClass}">
                                 <div class="log-time">${time}</div>
-                                <div class="log-level ${log.level}">${log.level}</div>
+                                <div class="log-level ${levelClass}">${level}</div>
                                 <div class="log-message">${escapeHtml(message)}</div>
                             </div>
                         `);
                     }
                 });
                 
-                if (currentStep) {
-                    formattedLogs.push(`</div>`);
+                // Close last step if exists
+                if (currentStep !== null && stepLogs.length > 0) {
+                    const lastLog = logs[logs.length - 1];
+                    const lastTime = new Date(lastLog.timestamp * 1000).toLocaleTimeString();
+                    formattedLogs.push(`<div class="log-entry step">`);
+                    formattedLogs.push(`<div class="log-time">${lastTime}</div>`);
+                    formattedLogs.push(`<div class="log-level INFO">STEP ${currentStep}</div>`);
+                    formattedLogs.push(`<div class="log-message">`);
+                    stepLogs.forEach(stepLog => {
+                        formattedLogs.push(`<div style="margin-left: 12px; margin-top: 4px;">${escapeHtml(stepLog)}</div>`);
+                    });
+                    formattedLogs.push(`</div></div>`);
                 }
                 
                 logsContainer.innerHTML = formattedLogs.join('');

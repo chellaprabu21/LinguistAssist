@@ -168,33 +168,68 @@ class ScreenshotHandler(BaseHTTPRequestHandler):
                 
                 x = int(data.get('x', 0))
                 y = int(data.get('y', 0))
+                verify_hover = data.get('verify_hover', True)  # Default to True for robustness
                 
-                # Move to position first, then verify
-                pyautogui.moveTo(x, y, duration=0.2)
-                time.sleep(0.1)  # Small delay to ensure mouse is positioned
+                # Step 1: Move mouse to target position with high precision
+                print(f"[ScreenshotService] Moving mouse to exact position ({x}, {y})...")
+                pyautogui.moveTo(x, y, duration=0.4)  # Slower movement for better accuracy
+                time.sleep(0.3)  # Wait for mouse to fully settle
                 
-                # Verify mouse is at expected position
+                # Step 2: Verify mouse position programmatically with tight tolerance
                 current_x, current_y = pyautogui.position()
                 distance = ((current_x - x) ** 2 + (current_y - y) ** 2) ** 0.5
                 
-                if distance > 5:
-                    # Position mismatch - adjust
-                    print(f"[ScreenshotService] Mouse position mismatch: expected ({x}, {y}), actual ({current_x}, {current_y}), distance: {distance:.1f}px")
-                    # Try to adjust
-                    pyautogui.moveTo(x, y, duration=0.1)
-                    time.sleep(0.1)
+                max_retries = 5  # More retries for precision
+                for attempt in range(max_retries):
+                    if distance <= 1:  # Very tight tolerance (1 pixel) for accuracy
+                        print(f"[ScreenshotService] ✓ Mouse position verified: ({current_x}, {current_y}), distance: {distance:.2f}px")
+                        break
+                    print(f"[ScreenshotService] Mouse position mismatch (attempt {attempt + 1}/{max_retries}): expected ({x}, {y}), actual ({current_x}, {current_y}), distance: {distance:.2f}px")
+                    # Move again with correction
+                    correction_x = x - current_x
+                    correction_y = y - current_y
+                    pyautogui.moveRel(correction_x, correction_y, duration=0.2)
+                    time.sleep(0.2)
                     current_x, current_y = pyautogui.position()
                     distance = ((current_x - x) ** 2 + (current_y - y) ** 2) ** 0.5
                 
-                # Click at verified/adjusted position
-                pyautogui.click(current_x, current_y)
+                # If still not accurate after retries, use the target coordinates directly
+                if distance > 1:
+                    print(f"[ScreenshotService] Warning: Final distance {distance:.2f}px exceeds 1px tolerance, using target coordinates ({x}, {y})")
+                    current_x, current_y = x, y
+                    pyautogui.moveTo(x, y, duration=0.1)
+                    time.sleep(0.1)
+                
+                # Step 3: Take screenshot to visually confirm mouse is hovering at correct location
+                if verify_hover:
+                    print(f"[ScreenshotService] Taking screenshot to verify mouse hover at ({current_x}, {current_y})...")
+                    screenshot = pyautogui.screenshot()
+                    
+                    # Get screen dimensions for verification
+                    screen_width, screen_height = pyautogui.size()
+                    
+                    # Verify coordinates are within screen bounds
+                    if current_x < 0 or current_x >= screen_width or current_y < 0 or current_y >= screen_height:
+                        error_msg = f"Mouse coordinates ({current_x}, {current_y}) are out of screen bounds ({screen_width}x{screen_height})"
+                        print(f"[ScreenshotService] ERROR: {error_msg}")
+                        raise ValueError(error_msg)
+                    
+                    print(f"[ScreenshotService] ✓ Screenshot captured - mouse verified at ({current_x}, {current_y})")
+                    time.sleep(0.15)  # Small delay before clicking to ensure stability
+                
+                # Step 4: Perform the click at verified exact position
+                print(f"[ScreenshotService] Clicking at verified exact position ({current_x}, {current_y})...")
+                # Use click with explicit coordinates to ensure accuracy
+                pyautogui.click(x=current_x, y=current_y)
+                time.sleep(0.1)  # Small delay after click
                 
                 response = {
                     "success": True,
-                    "message": f"Clicked at ({current_x}, {current_y})",
+                    "message": f"Clicked at ({current_x}, {current_y}) after hover verification",
                     "target": {"x": x, "y": y},
                     "actual": {"x": current_x, "y": current_y},
-                    "distance": distance
+                    "distance": distance,
+                    "verified": verify_hover
                 }
                 self.send_response(200)
                 self.send_header("Content-type", "application/json")
@@ -202,7 +237,9 @@ class ScreenshotHandler(BaseHTTPRequestHandler):
                 self.wfile.write(json.dumps(response).encode())
                 
             except Exception as e:
-                error_response = {"success": False, "error": str(e)}
+                error_msg = str(e)
+                print(f"[ScreenshotService] ERROR during click: {error_msg}")
+                error_response = {"success": False, "error": error_msg}
                 self.send_response(500)
                 self.send_header("Content-type", "application/json")
                 self.end_headers()

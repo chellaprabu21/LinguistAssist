@@ -127,15 +127,16 @@ def get_db():
 
 
 def get_api_keys() -> List[str]:
-    """Get API keys from environment variable or generate default."""
+    """Get API keys from environment variable or use default."""
     if API_KEYS_ENV:
         return [key.strip() for key in API_KEYS_ENV.split(',') if key.strip()]
     
-    # Generate a default key if none provided (for first run)
-    default_key = secrets.token_urlsafe(32)
-    print(f"⚠️  WARNING: No API_KEYS environment variable set!")
-    print(f"Generated temporary API key: {default_key}")
-    print(f"Set API_KEYS environment variable with your keys (comma-separated)")
+    # Use default key that matches frontend (for local development)
+    # This matches the DEFAULT_API_KEY in public/index.html
+    default_key = 'mSawoFoDlUkNxi39RgpFJPUwxFOxdJ9TM3YAMsGKARs'
+    print(f"⚠️  INFO: No API_KEYS environment variable set!")
+    print(f"Using default API key for local development: {default_key[:20]}...")
+    print(f"Set API_KEYS environment variable to override (comma-separated)")
     return [default_key]
 
 
@@ -162,33 +163,51 @@ def check_rate_limit(api_key: str) -> bool:
     return True
 
 
-def require_api_key(f):
-    """Decorator to require API key authentication."""
-    @wraps(f)
-    def decorated_function(*args, **kwargs):
-        api_key = request.headers.get('X-API-Key') or request.args.get('api_key')
-        
-        if not api_key:
-            return jsonify({
-                "error": "API key required",
-                "message": "Provide API key via X-API-Key header or api_key query parameter"
-            }), 401
-        
-        valid_keys = get_api_keys()
-        if api_key not in valid_keys:
-            return jsonify({
-                "error": "Invalid API key"
-            }), 401
-        
-        # Check rate limit
-        if not check_rate_limit(api_key):
-            return jsonify({
-                "error": "Rate limit exceeded",
-                "message": f"Maximum {DEFAULT_RATE_LIMIT} requests per minute"
-            }), 429
-        
-        return f(*args, **kwargs)
-    return decorated_function
+def require_api_key(f=None, skip_rate_limit=False):
+    """Decorator to require API key authentication.
+    
+    Can be used as:
+        @require_api_key
+        @require_api_key(skip_rate_limit=True)
+    
+    Args:
+        f: Function to decorate (when used without parentheses)
+        skip_rate_limit: If True, skip rate limiting (for internal operations like log updates)
+    """
+    def decorator(func):
+        @wraps(func)
+        def decorated_function(*args, **kwargs):
+            api_key = request.headers.get('X-API-Key') or request.args.get('api_key')
+            
+            if not api_key:
+                return jsonify({
+                    "error": "API key required",
+                    "message": "Provide API key via X-API-Key header or api_key query parameter"
+                }), 401
+            
+            valid_keys = get_api_keys()
+            if api_key not in valid_keys:
+                return jsonify({
+                    "error": "Invalid API key"
+                }), 401
+            
+            # Check rate limit (skip for internal operations)
+            if not skip_rate_limit and not check_rate_limit(api_key):
+                return jsonify({
+                    "error": "Rate limit exceeded",
+                    "message": f"Maximum {DEFAULT_RATE_LIMIT} requests per minute"
+                }), 429
+            
+            return func(*args, **kwargs)
+        return decorated_function
+    
+    # Handle both @require_api_key and @require_api_key(...)
+    if f is None:
+        # Called with parentheses: @require_api_key(skip_rate_limit=True)
+        return decorator
+    else:
+        # Called without parentheses: @require_api_key
+        return decorator(f)
 
 
 @app.route('/', methods=['GET'])
@@ -376,7 +395,17 @@ def get_task_status(task_id: str):
                     "task_id": task_id
                 }), 404
             
-            task = dict(row)
+            # Convert row to dict explicitly using column names
+            task = {
+                'id': row['id'],
+                'goal': row['goal'],
+                'max_steps': row['max_steps'],
+                'status': row['status'],
+                'timestamp': row['timestamp'],
+                'source': row['source'],
+                'device_id': row['device_id'],
+                'result': row['result']
+            }
             if task['result']:
                 try:
                     task['result'] = json.loads(task['result'])
@@ -421,7 +450,17 @@ def list_tasks():
             tasks = []
             
             for row in rows:
-                task = dict(row)
+                # Convert row to dict explicitly using column names
+                task = {
+                    'id': row['id'],
+                    'goal': row['goal'],
+                    'max_steps': row['max_steps'],
+                    'status': row['status'] or 'queued',  # Ensure status is never None
+                    'timestamp': row['timestamp'],
+                    'source': row['source'],
+                    'device_id': row['device_id'],
+                    'result': row['result']
+                }
                 if task['result']:
                     try:
                         task['result'] = json.loads(task['result'])
@@ -432,15 +471,24 @@ def list_tasks():
             if limit:
                 tasks = tasks[:limit]
             
+            # Log for debugging
+            print(f"[list_tasks] Returning {len(tasks)} tasks (filter: {status_filter})")
+            for task in tasks[:5]:  # Log first 5 tasks
+                print(f"  - Task {task['id'][:8]}...: status={task['status']}, goal={task['goal'][:50]}...")
+            
             return jsonify({
                 "tasks": tasks,
                 "count": len(tasks)
             }), 200
         
     except Exception as e:
+        import traceback
+        error_msg = str(e)
+        traceback.print_exc()
+        print(f"[list_tasks] ERROR: {error_msg}")
         return jsonify({
             "error": "Internal server error",
-            "message": str(e)
+            "message": error_msg
         }), 500
 
 
@@ -540,7 +588,16 @@ def list_devices():
             
             devices = []
             for row in cursor.fetchall():
-                devices.append(dict(row))
+                # Convert row to dict explicitly using column names
+                device = {
+                    'id': row['id'],
+                    'name': row['name'],
+                    'description': row['description'],
+                    'last_seen': row['last_seen'],
+                    'status': row['status'],
+                    'created_at': row['created_at']
+                }
+                devices.append(device)
             
             return jsonify({
                 "devices": devices,
@@ -677,7 +734,7 @@ def get_task_logs(task_id: str):
 
 
 @app.route('/api/v1/tasks/<task_id>/logs', methods=['POST'])
-@require_api_key
+@require_api_key(skip_rate_limit=True)  # Skip rate limiting for internal log updates
 def add_task_log(task_id: str):
     """Add a log entry for a task (called by service)."""
     try:
@@ -771,7 +828,15 @@ def claim_task():
             ''', (task_id,))
             
             row = cursor.fetchone()
-            task = dict(row)
+            # Convert row to dict explicitly using column names
+            task = {
+                'id': row['id'],
+                'goal': row['goal'],
+                'max_steps': row['max_steps'],
+                'status': row['status'],
+                'timestamp': row['timestamp'],
+                'device_id': row['device_id']
+            }
             return jsonify({
                 "message": "Task claimed successfully",
                 "task": task
@@ -785,7 +850,7 @@ def claim_task():
 
 
 @app.route('/api/v1/tasks/<task_id>/result', methods=['PUT'])
-@require_api_key
+@require_api_key(skip_rate_limit=True)  # Skip rate limiting for internal status updates
 def update_task_result(task_id: str):
     """Update task result (for worker service to call)."""
     try:

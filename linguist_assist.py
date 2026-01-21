@@ -756,12 +756,9 @@ class LinguistAssist:
                                     print(f"[LinguistAssist] Coordinates are very similar to recent clicks. Waiting longer and trying again...")
                                     time.sleep(2)  # Longer wait
                             
-                            # Add small random offset to improve click accuracy (within 3 pixels)
-                            import random
-                            offset_x = random.randint(-3, 3)
-                            offset_y = random.randint(-3, 3)
-                            click_x = max(0, min(pixel_x + offset_x, self.coordinate_mapper.logical_width - 1))
-                            click_y = max(0, min(pixel_y + offset_y, self.coordinate_mapper.logical_height - 1))
+                            # Use exact coordinates - no random offset to ensure accuracy
+                            click_x = pixel_x
+                            click_y = pixel_y
                             
                             print(f"[LinguistAssist] Target click location: ({click_x}, {click_y}) (mapped from normalized {normalized_x:.1f}, {normalized_y:.1f})...")
                             
