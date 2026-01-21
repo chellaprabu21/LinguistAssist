@@ -1,0 +1,18 @@
+#!/bin/bash
+# Preinstall script for LinguistAssist macOS installer
+# This script runs before files are installed
+
+# Unload existing services if they exist
+LAUNCH_AGENTS_DIR="$HOME/Library/LaunchAgents"
+
+if [ -f "$LAUNCH_AGENTS_DIR/com.jumpcloud.linguistassist.plist" ]; then
+    echo "Stopping existing LinguistAssist service..."
+    launchctl unload "$LAUNCH_AGENTS_DIR/com.jumpcloud.linguistassist.plist" 2>/dev/null || true
+fi
+
+if [ -f "$LAUNCH_AGENTS_DIR/com.jumpcloud.linguistassist.api.plist" ]; then
+    echo "Stopping existing LinguistAssist API service..."
+    launchctl unload "$LAUNCH_AGENTS_DIR/com.jumpcloud.linguistassist.api.plist" 2>/dev/null || true
+fi
+
+echo "Preinstall complete."

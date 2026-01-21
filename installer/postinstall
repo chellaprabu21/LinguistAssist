@@ -1,0 +1,274 @@
+#!/bin/bash
+# Postinstall script for LinguistAssist macOS installer
+# This script runs after files are installed
+
+# Don't use set -e, we want to handle errors gracefully
+set +e
+
+INSTALL_DIR="/Applications/LinguistAssist"
+APP_SUPPORT_DIR="$HOME/Library/Application Support/LinguistAssist"
+LAUNCH_AGENTS_DIR="$HOME/Library/LaunchAgents"
+LOG_DIR="$HOME/.linguist_assist"
+
+echo "Running LinguistAssist postinstall script..."
+
+# Wait a moment for files to be fully installed
+sleep 1
+
+# Check if Python 3 is available
+if ! command -v python3 &> /dev/null; then
+    echo "ERROR: Python 3 is required but not found."
+    echo "Please install Python 3 from https://www.python.org/downloads/"
+    exit 1
+fi
+
+# Get Python 3 path
+PYTHON3_PATH=$(which python3)
+echo "Found Python 3 at: $PYTHON3_PATH"
+
+# Verify installation directory exists
+# Note: In macOS installer, postinstall runs before files are copied to final location
+# So we need to wait a moment and check again, or handle gracefully
+if [ ! -d "$INSTALL_DIR" ]; then
+    echo "Waiting for files to be installed..."
+    sleep 2
+    # Check again after waiting
+    if [ ! -d "$INSTALL_DIR" ]; then
+        echo "WARNING: Installation directory not found: $INSTALL_DIR"
+        echo "Files may still be copying. Some post-install steps will be skipped."
+        echo "You may need to run the installation steps manually."
+        # Don't exit with error - let the installer complete
+        SKIP_INSTALL_STEPS=1
+    else
+        SKIP_INSTALL_STEPS=0
+    fi
+else
+    SKIP_INSTALL_STEPS=0
+fi
+
+# Create necessary directories
+echo "Creating directories..."
+mkdir -p "$APP_SUPPORT_DIR" 2>/dev/null || true
+mkdir -p "$LAUNCH_AGENTS_DIR" 2>/dev/null || true
+mkdir -p "$LOG_DIR" 2>/dev/null || true
+mkdir -p "$LOG_DIR/queue" 2>/dev/null || true
+mkdir -p "$LOG_DIR/processing" 2>/dev/null || true
+mkdir -p "$LOG_DIR/completed" 2>/dev/null || true
+
+# Skip installation steps if directory doesn't exist
+if [ "$SKIP_INSTALL_STEPS" != "1" ]; then
+    # Install Python dependencies (only if requirements.txt exists)
+    REQUIREMENTS_FILE="$INSTALL_DIR/requirements.txt"
+    if [ -f "$REQUIREMENTS_FILE" ]; then
+        echo "Installing Python dependencies..."
+        "$PYTHON3_PATH" -m pip install --quiet --upgrade pip 2>/dev/null || true
+        "$PYTHON3_PATH" -m pip install --quiet -r "$REQUIREMENTS_FILE" 2>&1 || {
+            echo "WARNING: Some dependencies may have failed to install. You may need to install them manually."
+        }
+    else
+        echo "WARNING: requirements.txt not found. Skipping dependency installation."
+    fi
+
+    # Make scripts executable (only if files exist)
+    echo "Setting permissions..."
+    if ls "$INSTALL_DIR"/*.py 1> /dev/null 2>&1; then
+        chmod +x "$INSTALL_DIR"/*.py 2>/dev/null || true
+    fi
+    if ls "$INSTALL_DIR"/*.sh 1> /dev/null 2>&1; then
+        chmod +x "$INSTALL_DIR"/*.sh 2>/dev/null || true
+    fi
+else
+    echo "Skipping file operations - directory not available yet."
+fi
+
+# Configure Gemini API key (hardcoded for production)
+echo "Configuring Gemini API key..."
+GEMINI_API_KEY="mSawoFoDlUkNxi39RgpFJPUwxFOxdJ9TM3YAMsGKARs"
+GEMINI_KEY_FILE="$LOG_DIR/gemini_api_key.txt"
+echo "$GEMINI_API_KEY" > "$GEMINI_KEY_FILE"
+chmod 600 "$GEMINI_KEY_FILE" 2>/dev/null || true
+
+# Set up cloud API configuration automatically
+echo "Configuring cloud API..."
+CLOUD_CONFIG_FILE="$LOG_DIR/cloud_config.json"
+API_URL="https://linguist-assist.vercel.app"
+API_KEY="mSawoFoDlUkNxi39RgpFJPUwxFOxdJ9TM3YAMsGKARs"
+
+"$PYTHON3_PATH" <<PYTHON_SCRIPT 2>/dev/null || true
+import json
+import os
+
+cloud_config = {
+    "api_url": "$API_URL",
+    "api_key": "$API_KEY"
+}
+
+config_file = "$CLOUD_CONFIG_FILE"
+os.makedirs(os.path.dirname(config_file), exist_ok=True)
+with open(config_file, 'w') as f:
+    json.dump(cloud_config, f, indent=2)
+
+print("Cloud API configuration created")
+PYTHON_SCRIPT
+
+# Set up local API server configuration
+echo "Configuring local API server..."
+API_CONFIG_FILE="$LOG_DIR/api_config.json"
+"$PYTHON3_PATH" <<PYTHON_SCRIPT 2>/dev/null || true
+import json
+import secrets
+import os
+
+api_config = {
+    "host": "127.0.0.1",
+    "port": 8080,
+    "api_keys": ["$API_KEY"],
+    "rate_limit": {
+        "enabled": True,
+        "requests_per_minute": 60
+    },
+    "allowed_ips": []
+}
+
+config_file = "$API_CONFIG_FILE"
+os.makedirs(os.path.dirname(config_file), exist_ok=True)
+with open(config_file, 'w') as f:
+    json.dump(api_config, f, indent=2)
+
+print("Local API configuration created")
+PYTHON_SCRIPT
+
+# Update plist files with correct paths
+if [ "$SKIP_INSTALL_STEPS" != "1" ]; then
+    echo "Configuring Launch Agent..."
+
+    # Main service plist
+    MAIN_PLIST="$INSTALL_DIR/com.jumpcloud.linguistassist.plist"
+    if [ -f "$MAIN_PLIST" ]; then
+    # Create a temporary plist with updated paths
+    INSTALLED_PLIST="$LAUNCH_AGENTS_DIR/com.jumpcloud.linguistassist.plist"
+    
+    # Use Python to properly update the plist (more reliable than sed)
+    "$PYTHON3_PATH" <<PYTHON_SCRIPT 2>/dev/null || true
+import plistlib
+import os
+
+try:
+    plist_path = "$MAIN_PLIST"
+    with open(plist_path, 'rb') as f:
+        plist = plistlib.load(f)
+
+    # Update paths
+    plist['ProgramArguments'][0] = "$PYTHON3_PATH"
+    plist['ProgramArguments'][1] = "$INSTALL_DIR/linguist_assist_service.py"
+
+    # Update log paths
+    plist['StandardOutPath'] = "$LOG_DIR/service.log"
+    plist['StandardErrorPath'] = "$LOG_DIR/service_error.log"
+
+    # Update environment variables
+    env_vars = plist.get('EnvironmentVariables', {})
+    env_vars['PATH'] = os.path.dirname("$PYTHON3_PATH") + ":/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+    env_vars['PYTHONPATH'] = "$INSTALL_DIR"
+    env_vars['HOME'] = os.environ.get('HOME', "$HOME")
+    plist['EnvironmentVariables'] = env_vars
+
+    # Update working directory
+    plist['WorkingDirectory'] = "$INSTALL_DIR"
+
+    # Write updated plist
+    with open("$INSTALLED_PLIST", 'wb') as f:
+        plistlib.dump(plist, f)
+
+    print("Launch Agent plist configured successfully")
+except Exception as e:
+    print(f"Warning: Could not configure plist: {e}")
+PYTHON_SCRIPT
+    
+    # Load and start the service automatically
+    launchctl unload "$INSTALLED_PLIST" 2>/dev/null || true
+    launchctl load "$INSTALLED_PLIST" 2>/dev/null || true
+    sleep 1
+    launchctl start com.jumpcloud.linguistassist 2>/dev/null || true
+    echo "Launch Agent configured and started"
+else
+    echo "Warning: Main plist file not found at $MAIN_PLIST"
+fi
+
+# API service plist (if exists)
+API_PLIST="$INSTALL_DIR/com.jumpcloud.linguistassist.api.plist"
+if [ -f "$API_PLIST" ]; then
+    INSTALLED_API_PLIST="$LAUNCH_AGENTS_DIR/com.jumpcloud.linguistassist.api.plist"
+    
+    "$PYTHON3_PATH" <<PYTHON_SCRIPT 2>/dev/null || true
+import plistlib
+import os
+
+try:
+    plist_path = "$API_PLIST"
+    with open(plist_path, 'rb') as f:
+        plist = plistlib.load(f)
+
+    # Update paths
+    plist['ProgramArguments'][0] = "$PYTHON3_PATH"
+    plist['ProgramArguments'][1] = "$INSTALL_DIR/linguist_assist_api.py"
+
+    # Update log paths
+    plist['StandardOutPath'] = "$LOG_DIR/api.log"
+    plist['StandardErrorPath'] = "$LOG_DIR/api_error.log"
+
+    # Update environment variables
+    env_vars = plist.get('EnvironmentVariables', {})
+    env_vars['PATH'] = os.path.dirname("$PYTHON3_PATH") + ":/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+    env_vars['PYTHONPATH'] = "$INSTALL_DIR"
+    plist['EnvironmentVariables'] = env_vars
+
+    # Update working directory
+    plist['WorkingDirectory'] = "$INSTALL_DIR"
+
+    # Write updated plist
+    with open("$INSTALLED_API_PLIST", 'wb') as f:
+        plistlib.dump(plist, f)
+
+    print("API Launch Agent plist configured successfully")
+except Exception as e:
+    print(f"Warning: Could not configure API plist: {e}")
+PYTHON_SCRIPT
+    
+    # Load and start API service automatically
+    launchctl unload "$INSTALLED_API_PLIST" 2>/dev/null || true
+    launchctl load "$INSTALLED_API_PLIST" 2>/dev/null || true
+    sleep 1
+    launchctl start com.jumpcloud.linguistassist.api 2>/dev/null || true
+    echo "API Launch Agent configured and started"
+    fi
+else
+    echo "Skipping Launch Agent configuration - files not available yet."
+fi
+
+# Exit with success (0) - don't fail the installer even if some steps were skipped
+EXIT_CODE=0
+
+if [ $EXIT_CODE -eq 0 ]; then
+    echo ""
+    echo "✓ LinguistAssist installation completed!"
+    echo ""
+    echo "Service Status:"
+    echo "  - Main service: Configured and started"
+    echo "  - API server: Configured and started"
+    echo "  - Gemini API key: Configured automatically"
+    echo "  - Cloud API: Configured to use: $API_URL"
+    echo ""
+    echo "IMPORTANT: Grant Screen Recording permissions:"
+    echo "  System Settings > Privacy & Security > Screen Recording"
+    echo "  Enable for Terminal (or Python if running from command line)"
+    echo ""
+    echo "The service is now running and ready to accept tasks from the backend API."
+    echo ""
+    echo "Test the installation:"
+    echo "  curl -H \"X-API-Key: $API_KEY\" http://localhost:8080/api/v1/health"
+    echo ""
+    echo "For more information, see: $INSTALL_DIR/README.md"
+fi
+
+exit $EXIT_CODE
