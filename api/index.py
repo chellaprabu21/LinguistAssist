@@ -14,5 +14,4 @@ from linguist_assist_api_cloud import app, init_database
 init_database()
 
 # Export the Flask app for Vercel's Python runtime
-# Vercel requires handler export for Python runtime
-handler = app
+# Vercel will automatically handle WSGI requests

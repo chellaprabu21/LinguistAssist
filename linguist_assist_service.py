@@ -160,19 +160,11 @@ class LinguistAssistService:
             # Ensure screenshot service is running
             self.ensure_screenshot_service()
             
-            logger.info(f"Initializing LinguistAssist agent with model: {self.model_name}")
             self.agent = LinguistAssist(model_name=self.model_name)
             logger.info("LinguistAssist agent initialized successfully")
             return True
-        except ValueError as e:
-            logger.error(f"Failed to initialize agent - API key issue: {e}")
-            logger.error("Check that Gemini API key is configured correctly")
-            logger.error("Key should be in ~/.linguist_assist/gemini_api_key.txt or GEMINI_API_KEY env var")
-            return False
         except Exception as e:
             logger.error(f"Failed to initialize agent: {e}")
-            import traceback
-            logger.error(f"Traceback: {traceback.format_exc()}")
             return False
     
     def claim_task(self) -> Optional[Dict]:
@@ -190,7 +182,7 @@ class LinguistAssistService:
                 f"{self.api_url}/api/v1/tasks/claim",
                 json={"device_id": self.device_id},
                 headers=headers,
-                timeout=30  # Increased timeout for Vercel cold starts
+                timeout=10
             )
             response.raise_for_status()
             data = response.json()
@@ -200,18 +192,6 @@ class LinguistAssistService:
                 logger.info(f"Claimed task: {task.get('id')} - {task.get('goal')}")
                 return task
             
-            return None
-        except requests.exceptions.HTTPError as e:
-            if e.response.status_code == 405:
-                logger.error(f"405 Method Not Allowed - Vercel routing issue. Endpoint: {self.api_url}/api/v1/tasks/claim")
-                logger.error("This usually means the route isn't properly configured in Vercel")
-            logger.error(f"Failed to claim task from API: {e}")
-            if hasattr(e, 'response') and e.response is not None:
-                logger.error(f"Response status: {e.response.status_code}")
-                try:
-                    logger.error(f"Response body: {e.response.text[:200]}")
-                except:
-                    pass
             return None
         except requests.exceptions.RequestException as e:
             logger.error(f"Failed to claim task from API: {e}")
@@ -232,7 +212,7 @@ class LinguistAssistService:
             response = requests.get(
                 f"{self.api_url}/api/v1/tasks?status=queued",
                 headers=headers,
-                timeout=30
+                timeout=10
             )
             response.raise_for_status()
             data = response.json()
@@ -264,7 +244,7 @@ class LinguistAssistService:
                 f"{self.api_url}/api/v1/tasks/{task_id}/logs",
                 json={"level": level, "message": message},
                 headers=headers,
-                timeout=30
+                timeout=5
             )
             return True
         except:
@@ -290,7 +270,7 @@ class LinguistAssistService:
                 f"{self.api_url}/api/v1/devices",
                 json={"id": device_id, "name": device_name, "description": "LinguistAssist Service"},
                 headers=headers,
-                timeout=30
+                timeout=10
             )
             response.raise_for_status()
             self.device_id = device_id
@@ -313,7 +293,7 @@ class LinguistAssistService:
             requests.post(
                 f"{self.api_url}/api/v1/devices/{self.device_id}/heartbeat",
                 headers=headers,
-                timeout=30
+                timeout=5
             )
         except:
             pass
@@ -339,7 +319,7 @@ class LinguistAssistService:
                 f"{self.api_url}/api/v1/tasks/{task_id}/result",
                 json=data,
                 headers=headers,
-                timeout=30
+                timeout=10
             )
             response.raise_for_status()
             return True
@@ -403,14 +383,6 @@ class LinguistAssistService:
         
         # Execute task with logging
         try:
-            # Check if agent is initialized
-            if not self.agent:
-                error_msg = "Agent not initialized - cannot process task"
-                logger.error(f"Task {task_id}: {error_msg}")
-                self.send_log(task_id, "ERROR", error_msg)
-                self.update_task_status(task_id, "error", {"error": error_msg})
-                return False
-            
             logger.info(f"Executing goal: {goal} (max_steps: {max_steps})")
             self.send_log(task_id, "INFO", f"Starting task execution: {goal}")
             
@@ -437,7 +409,6 @@ class LinguistAssistService:
             
             try:
                 success = self.agent.execute_task(goal, max_steps=max_steps)
-                logger.info(f"Task execution completed: success={success}")
             finally:
                 logger.removeHandler(api_handler)
             
@@ -477,11 +448,8 @@ class LinguistAssistService:
         
         # Initialize agent
         if not self.initialize_agent():
-            logger.error("Failed to initialize agent")
-            logger.error("Service will continue but cannot process tasks until agent is initialized")
-            logger.error("Check logs for details: tail -f ~/.linguist_assist/service.log")
-            # Don't exit - allow service to run and retry initialization later
-            # return 1
+            logger.error("Failed to initialize agent, exiting")
+            return 1
         
         # Register as device
         if self.api_url and self.api_key:
@@ -510,16 +478,6 @@ class LinguistAssistService:
                         last_heartbeat = time.time()
                 
                 if self.api_url and self.api_key:
-                    # Ensure agent is initialized before processing tasks
-                    if not self.agent:
-                        logger.warning("Agent not initialized, attempting to initialize...")
-                        if self.initialize_agent():
-                            logger.info("Agent initialized successfully")
-                        else:
-                            logger.warning("Agent initialization failed, skipping task processing")
-                            time.sleep(self.poll_interval)
-                            continue
-                    
                     # Try to atomically claim a task (prevents race conditions)
                     if self.device_id:
                         task = self.claim_task()

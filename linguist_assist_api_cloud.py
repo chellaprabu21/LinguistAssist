@@ -25,15 +25,11 @@ DB_FILE = os.getenv('DATABASE_URL', 'sqlite:///linguist_assist.db').replace('sql
 if DB_FILE.startswith('/'):
     DB_PATH = DB_FILE
 else:
-    # For cloud platforms, use /tmp (only writable location on Vercel)
-    # Fall back to HOME if /tmp doesn't work (for other platforms)
-    DB_PATH = os.path.join('/tmp', DB_FILE)
-    # Try to create /tmp path, if it fails, use HOME
-    try:
-        os.makedirs(os.path.dirname(DB_PATH) if os.path.dirname(DB_PATH) else '.', exist_ok=True)
-    except:
-        DB_PATH = os.path.join(os.getenv('HOME', '/tmp'), DB_FILE)
-        os.makedirs(os.path.dirname(DB_PATH) if os.path.dirname(DB_PATH) else '.', exist_ok=True)
+    # For cloud platforms, use a persistent directory
+    DB_PATH = os.path.join(os.getenv('HOME', '/tmp'), DB_FILE)
+
+# Ensure directory exists
+os.makedirs(os.path.dirname(DB_PATH) if os.path.dirname(DB_PATH) else '.', exist_ok=True)
 
 # API configuration
 API_KEYS_ENV = os.getenv('API_KEYS', '')  # Comma-separated API keys

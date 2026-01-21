@@ -7,7 +7,6 @@ import os
 import re
 import sys
 import time
-from pathlib import Path
 from typing import Optional, Tuple, List
 
 import google.generativeai as genai
@@ -126,29 +125,14 @@ class LinguistAssist:
         
         Args:
             model_name: Gemini model to use ('gemini-1.5-flash' or 'gemini-1.5-pro')
-            api_key: Google Generative AI API key (if not provided, reads from GEMINI_API_KEY env var or uses default)
+            api_key: Google Generative AI API key (if not provided, reads from GEMINI_API_KEY env var)
         """
-        # Default hardcoded API key for production use
-        DEFAULT_API_KEY = "mSawoFoDlUkNxi39RgpFJPUwxFOxdJ9TM3YAMsGKARs"
-        
-        # Try to load API key in order of priority:
-        # 1. Passed parameter
-        # 2. Environment variable
-        # 3. Config file
-        # 4. Hardcoded default
         api_key = api_key or os.getenv("GEMINI_API_KEY")
         if not api_key:
-            # Try to load from config file
-            config_file = Path.home() / ".linguist_assist" / "gemini_api_key.txt"
-            if config_file.exists():
-                try:
-                    api_key = config_file.read_text().strip()
-                except Exception:
-                    pass
-        
-        # Use default if still not found
-        if not api_key:
-            api_key = DEFAULT_API_KEY
+            raise ValueError(
+                "API key not provided. Set GEMINI_API_KEY environment variable "
+                "or pass api_key parameter."
+            )
         
         genai.configure(api_key=api_key)
         
