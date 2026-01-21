@@ -107,8 +107,9 @@ class LinguistAssist:
         "Actions can be: 'click' (click on an element), 'type' (type text into a field), 'press_key' (press a keyboard key like Enter, Tab, Escape). "
         "Return JSON format: {'complete': true/false, 'action_type': 'click'|'type'|'press_key', 'action': 'description of what you're doing', 'point': [y, x] if click/type needs coordinates, 'text': 'text to type' if type action, 'key': 'key name' if press_key}. "
         "If complete is true, other fields can be omitted. The coordinates must be normalized to a 0-1000 scale. "
-        "IMPORTANT: Set 'complete': true if the goal is achieved. For 'open app' goals, if you see the app window open or the app is visible on screen, the goal is complete. "
-        "If you've clicked the same element multiple times without progress, consider if the goal might already be achieved. "
+        "IMPORTANT: Set 'complete': true if the goal is achieved. For 'open app' goals, if you see the app window open, the app menu bar appears, or the app is clearly visible and active on screen, the goal is complete. "
+        "CRITICAL: When clicking dock icons or app launchers, aim for the CENTER of the icon, not the edges. Dock icons are typically 60-80 pixels wide, so target the middle. "
+        "If you've clicked the same element multiple times without progress, STOP and set 'complete': true if the app is already open, or try a different approach (like using Spotlight search). "
         "IMPORTANT: Break down complex tasks into individual steps. For 'send message to X': "
         "(1) First step: click on the contact in the DM list (ONLY if their conversation is not already open), "
         "(2) Second step: verify the conversation is open (check if you see their name in the header), "
@@ -845,8 +846,8 @@ class LinguistAssist:
                             except Exception:
                                 pyautogui.click(verified_x, verified_y)
                             
-                            # Wait a bit for the click to register
-                            time.sleep(0.3)
+                            # Wait for click to register and app to potentially launch
+                            time.sleep(0.5)  # Initial delay for click to register
                             
                             print(f"[LinguistAssist] Action executed: {action}")
                             action_history.append(action)
@@ -859,8 +860,14 @@ class LinguistAssist:
                             if len(recent_coordinates) > 5:
                                 recent_coordinates.pop(0)
                             
+                            # For app launches (clicking dock icons), wait longer and verify
+                            is_app_launch = any(keyword in action.lower() for keyword in ['app', 'application', 'icon', 'dock', 'launch', 'open'])
+                            if is_app_launch:
+                                print(f"[LinguistAssist] Detected app launch action, waiting longer for app to open...")
+                                time.sleep(2.5)  # Extra time for app to launch
+                            
                             # Delay to allow UI to update and verify action took effect
-                            time.sleep(2.0)  # Increased delay for UI to update and verify
+                            time.sleep(2.0)  # Standard delay for UI to update and verify
                         else:
                             print(f"[LinguistAssist] Invalid coordinates format. Skipping action.")
                     else:

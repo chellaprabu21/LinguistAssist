@@ -219,9 +219,15 @@ class ScreenshotHandler(BaseHTTPRequestHandler):
                 
                 # Step 4: Perform the click at verified exact position
                 print(f"[ScreenshotService] Clicking at verified exact position ({current_x}, {current_y})...")
-                # Use click with explicit coordinates to ensure accuracy
-                pyautogui.click(x=current_x, y=current_y)
-                time.sleep(0.1)  # Small delay after click
+                # For dock icons on macOS, sometimes a more forceful click or slight delay helps
+                # Use click with explicit coordinates and ensure mouse is still at position
+                pyautogui.moveTo(current_x, current_y, duration=0.05)  # Ensure we're still at the right spot
+                time.sleep(0.05)
+                # Perform a more deliberate click
+                pyautogui.mouseDown(x=current_x, y=current_y)
+                time.sleep(0.05)  # Hold down briefly
+                pyautogui.mouseUp(x=current_x, y=current_y)
+                time.sleep(0.2)  # Longer delay after click for app to launch
                 
                 response = {
                     "success": True,

@@ -44,6 +44,18 @@
             max-width: 1600px;
             margin: 0 auto;
             padding: 24px;
+            padding-bottom: 0;
+            transition: padding-bottom 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+        }
+
+        .container.with-monitor {
+            padding-bottom: 400px; /* Space for live monitor */
+        }
+
+        @media (max-height: 800px) {
+            .container.with-monitor {
+                padding-bottom: 300px;
+            }
         }
 
         header {
@@ -146,6 +158,207 @@
             .main-content {
                 grid-template-columns: 1fr;
             }
+        }
+
+        /* Live Monitoring Panel */
+        .live-monitor {
+            position: fixed;
+            bottom: 0;
+            left: 0;
+            right: 0;
+            background: var(--bg-card);
+            border-top: 2px solid var(--primary);
+            box-shadow: 0 -8px 32px var(--shadow-lg);
+            z-index: 1000;
+            height: 350px;
+            max-height: 40vh;
+            display: none;
+            flex-direction: column;
+            transition: transform 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+        }
+
+        .live-monitor.active {
+            display: flex;
+            animation: slideUp 0.4s cubic-bezier(0.4, 0, 0.2, 1);
+        }
+
+        @keyframes slideUp {
+            from {
+                transform: translateY(100%);
+            }
+            to {
+                transform: translateY(0);
+            }
+        }
+
+        .live-monitor-header {
+            padding: 12px 20px;
+            border-bottom: 1px solid var(--border);
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            background: linear-gradient(135deg, var(--primary) 0%, var(--primary-dark) 100%);
+            flex-shrink: 0;
+        }
+
+        .live-monitor-header h3 {
+            margin: 0;
+            font-size: 1.1rem;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .live-monitor-header .pulse {
+            width: 8px;
+            height: 8px;
+            background: var(--success);
+            border-radius: 50%;
+            animation: pulse 2s ease-in-out infinite;
+        }
+
+        @keyframes pulse {
+            0%, 100% { opacity: 1; transform: scale(1); }
+            50% { opacity: 0.5; transform: scale(1.2); }
+        }
+
+        .live-monitor-content {
+            display: grid;
+            grid-template-columns: 280px 1fr;
+            flex: 1;
+            overflow: hidden;
+            min-height: 0;
+        }
+
+        .current-action-panel {
+            padding: 16px;
+            border-right: 1px solid var(--border);
+            background: var(--bg-secondary);
+            overflow-y: auto;
+            min-height: 0;
+        }
+
+        .current-action {
+            background: var(--bg-card);
+            padding: 16px;
+            border-radius: 12px;
+            border-left: 4px solid var(--primary);
+            margin-bottom: 16px;
+        }
+
+        .current-action h4 {
+            font-size: 0.75rem;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            color: var(--text-muted);
+            margin-bottom: 8px;
+        }
+
+        .current-action .action-text {
+            font-size: 1rem;
+            font-weight: 600;
+            color: var(--text);
+            line-height: 1.4;
+        }
+
+        .current-step {
+            background: var(--bg-card);
+            padding: 16px;
+            border-radius: 12px;
+            border-left: 4px solid var(--secondary);
+        }
+
+        .current-step h4 {
+            font-size: 0.75rem;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            color: var(--text-muted);
+            margin-bottom: 8px;
+        }
+
+        .current-step .step-number {
+            font-size: 2rem;
+            font-weight: 700;
+            color: var(--secondary);
+        }
+
+        .live-logs-panel {
+            padding: 16px;
+            overflow-y: auto;
+            background: var(--bg);
+            min-height: 0;
+        }
+
+        .live-logs-panel h4 {
+            font-size: 0.875rem;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            color: var(--text-muted);
+            margin-bottom: 16px;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .live-logs-viewer {
+            font-family: 'SF Mono', 'Monaco', 'Courier New', monospace;
+            font-size: 0.75rem;
+            line-height: 1.5;
+            max-height: calc(40vh - 120px);
+            overflow-y: auto;
+        }
+
+        .live-logs-viewer::-webkit-scrollbar {
+            width: 6px;
+        }
+
+        .live-logs-viewer::-webkit-scrollbar-track {
+            background: var(--bg-secondary);
+        }
+
+        .live-logs-viewer::-webkit-scrollbar-thumb {
+            background: var(--border-light);
+            border-radius: 3px;
+        }
+
+        .live-log-entry {
+            padding: 6px 0;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.03);
+            display: flex;
+            gap: 12px;
+            align-items: start;
+            animation: fadeIn 0.3s ease-in;
+        }
+
+        @keyframes fadeIn {
+            from { opacity: 0; transform: translateY(-5px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+
+        .live-log-entry.new {
+            background: rgba(139, 92, 246, 0.1);
+            border-left: 2px solid var(--primary);
+            padding-left: 8px;
+        }
+
+        .close-monitor {
+            background: transparent;
+            border: none;
+            color: var(--text);
+            font-size: 1.5rem;
+            cursor: pointer;
+            padding: 0;
+            width: 32px;
+            height: 32px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            border-radius: 6px;
+            transition: background 0.2s;
+        }
+
+        .close-monitor:hover {
+            background: rgba(255, 255, 255, 0.1);
         }
 
         .card {
@@ -699,6 +912,40 @@
         </div>
     </div>
 
+    <!-- Live Monitoring Panel -->
+    <div class="live-monitor" id="live-monitor">
+        <div class="live-monitor-header">
+            <h3>
+                <span class="pulse"></span>
+                Live Task Monitoring
+            </h3>
+            <button class="close-monitor" onclick="closeLiveMonitor()" title="Close">×</button>
+        </div>
+        <div class="live-monitor-content">
+            <div class="current-action-panel">
+                <div class="current-action" id="current-action">
+                    <h4>Current Action</h4>
+                    <div class="action-text" id="action-text">Waiting for task to start...</div>
+                </div>
+                <div class="current-step" id="current-step">
+                    <h4>Step Progress</h4>
+                    <div class="step-number" id="step-number">-</div>
+                </div>
+            </div>
+            <div class="live-logs-panel">
+                <h4>
+                    <span>📜</span>
+                    Live Execution Logs
+                </h4>
+                <div class="live-logs-viewer" id="live-logs-viewer">
+                    <div style="color: var(--text-muted); padding: 20px; text-align: center;">
+                        Waiting for logs...
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
     <div class="notification" id="notification"></div>
 
     <script>
@@ -718,6 +965,9 @@
         let selectedTaskId = null;
         let refreshInterval = null;
         let logsInterval = null;
+        let liveMonitorInterval = null;
+        let currentProcessingTaskId = null;
+        let lastLogCount = 0;
         
         // API helpers
         async function apiCall(endpoint, options = {}) {
@@ -884,6 +1134,12 @@
                     const oldStatus = element.className.match(/task-item (\w+)/)?.[1];
                     if (oldStatus !== status) {
                         element.className = `task-item ${status}`;
+                        
+                        // Auto-show live monitor when task starts processing
+                        if (status === 'processing' && oldStatus !== 'processing') {
+                            currentProcessingTaskId = taskId;
+                            showLiveMonitor(taskId);
+                        }
                     }
                     element.innerHTML = taskHtml;
                 } else {
@@ -902,8 +1158,20 @@
                         element.style.opacity = '1';
                         element.style.transform = 'translateY(0)';
                     }, 10);
+                    
+                    // Auto-show live monitor for new processing tasks
+                    if (status === 'processing') {
+                        currentProcessingTaskId = taskId;
+                        showLiveMonitor(taskId);
+                    }
                 }
             });
+            
+            // Hide live monitor if no processing tasks
+            const hasProcessing = tasks.some(t => (t.status || 'queued') === 'processing');
+            if (!hasProcessing && currentProcessingTaskId) {
+                closeLiveMonitor();
+            }
             
             currentTasks = newTasks;
         }
@@ -1109,6 +1377,147 @@
             });
         });
 
+        // Live Monitor Functions
+        function showLiveMonitor(taskId) {
+            const monitor = document.getElementById('live-monitor');
+            const container = document.querySelector('.container');
+            monitor.classList.add('active');
+            container.classList.add('with-monitor');
+            currentProcessingTaskId = taskId;
+            lastLogCount = 0;
+            
+            // Load initial logs
+            loadLiveLogs(taskId);
+            
+            // Start auto-refresh for live logs
+            if (liveMonitorInterval) {
+                clearInterval(liveMonitorInterval);
+            }
+            liveMonitorInterval = setInterval(() => {
+                if (currentProcessingTaskId) {
+                    loadLiveLogs(currentProcessingTaskId);
+                }
+            }, 1500); // Faster refresh for live monitoring
+        }
+
+        function closeLiveMonitor() {
+            const monitor = document.getElementById('live-monitor');
+            const container = document.querySelector('.container');
+            monitor.classList.remove('active');
+            container.classList.remove('with-monitor');
+            currentProcessingTaskId = null;
+            if (liveMonitorInterval) {
+                clearInterval(liveMonitorInterval);
+                liveMonitorInterval = null;
+            }
+        }
+
+        async function loadLiveLogs(taskId) {
+            try {
+                const data = await apiCall(`/tasks/${taskId}/logs?limit=500`);
+                const logs = data.logs || [];
+                
+                // Update current action and step
+                updateCurrentAction(logs);
+                
+                // Update live logs viewer
+                const logsViewer = document.getElementById('live-logs-viewer');
+                if (logs.length === 0) {
+                    logsViewer.innerHTML = '<div style="color: var(--text-muted); padding: 20px; text-align: center;">Waiting for logs...</div>';
+                    return;
+                }
+                
+                // Only show new logs (for performance)
+                const newLogs = logs.slice(lastLogCount);
+                lastLogCount = logs.length;
+                
+                // Format and append new logs
+                newLogs.forEach(log => {
+                    const logEntry = formatLiveLogEntry(log);
+                    logsViewer.appendChild(logEntry);
+                });
+                
+                // Auto-scroll to bottom
+                logsViewer.scrollTop = logsViewer.scrollHeight;
+                
+            } catch (error) {
+                console.error('Failed to load live logs:', error);
+            }
+        }
+
+        function updateCurrentAction(logs) {
+            // Find the most recent action/step
+            let currentAction = 'Waiting for task to start...';
+            let currentStep = '-';
+            
+            // Look for step information
+            for (let i = logs.length - 1; i >= 0; i--) {
+                const log = logs[i];
+                const message = log.message || '';
+                
+                // Extract step number
+                const stepMatch = message.match(/Step (\d+)/i);
+                if (stepMatch) {
+                    currentStep = stepMatch[1];
+                }
+                
+                // Extract action (click, type, etc.)
+                if (message.includes('Clicking') || message.includes('click')) {
+                    const clickMatch = message.match(/Click(?:ing)?\s+(?:at|on|the)?\s*(.+?)(?:\.|$)/i);
+                    if (clickMatch) {
+                        currentAction = `Clicking: ${clickMatch[1]}`;
+                        break;
+                    }
+                } else if (message.includes('Typing') || message.includes('type')) {
+                    const typeMatch = message.match(/Typ(?:ing|e)?\s+(.+?)(?:\.|$)/i);
+                    if (typeMatch) {
+                        currentAction = `Typing: ${typeMatch[1]}`;
+                        break;
+                    }
+                } else if (message.includes('Executing') || message.includes('Action')) {
+                    const actionMatch = message.match(/(?:Executing|Action):\s*(.+?)(?:\.|$)/i);
+                    if (actionMatch) {
+                        currentAction = actionMatch[1];
+                        break;
+                    }
+                }
+            }
+            
+            // Update UI
+            document.getElementById('action-text').textContent = currentAction;
+            document.getElementById('step-number').textContent = currentStep;
+        }
+
+        function formatLiveLogEntry(log) {
+            const entry = document.createElement('div');
+            entry.className = 'live-log-entry new';
+            
+            const time = new Date(log.timestamp * 1000).toLocaleTimeString();
+            const message = log.message || '';
+            const level = log.level || 'INFO';
+            
+            // Remove "new" class after animation
+            setTimeout(() => entry.classList.remove('new'), 500);
+            
+            entry.innerHTML = `
+                <span style="color: var(--text-muted); min-width: 70px; font-size: 0.75rem;">${time}</span>
+                <span style="color: ${getLogLevelColor(level)}; min-width: 50px; font-size: 0.75rem; font-weight: 600;">${level}</span>
+                <span style="color: var(--text-secondary); flex: 1;">${escapeHtml(message)}</span>
+            `;
+            
+            return entry;
+        }
+
+        function getLogLevelColor(level) {
+            switch(level.toUpperCase()) {
+                case 'ERROR': return 'var(--error)';
+                case 'WARNING': return 'var(--warning)';
+                case 'INFO': return 'var(--primary-light)';
+                case 'DEBUG': return 'var(--text-muted)';
+                default: return 'var(--text-secondary)';
+            }
+        }
+
         // Auto-refresh
         loadTasks();
         refreshInterval = setInterval(() => {
@@ -1119,6 +1528,7 @@
         window.showTaskDetails = showTaskDetails;
         window.cancelTask = cancelTask;
         window.clearTasks = clearTasks;
+        window.closeLiveMonitor = closeLiveMonitor;
     </script>
 </body>
 </html>
