@@ -114,22 +114,16 @@ def init_database():
 @contextmanager
 def get_db():
     """Get database connection with proper cleanup."""
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row  # Return rows as dict-like objects
     try:
-        conn = sqlite3.connect(DB_PATH, timeout=10.0)
-        conn.row_factory = sqlite3.Row  # Return rows as dict-like objects
-        try:
-            yield conn
-            conn.commit()
-        except Exception:
-            conn.rollback()
-            raise
-        finally:
-            conn.close()
-    except Exception as e:
-        print(f"Error connecting to database at {DB_PATH}: {e}")
-        import traceback
-        print(f"Traceback: {traceback.format_exc()}")
+        yield conn
+        conn.commit()
+    except Exception:
+        conn.rollback()
         raise
+    finally:
+        conn.close()
 
 
 def get_api_keys() -> List[str]:
