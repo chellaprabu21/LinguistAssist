@@ -21,24 +21,25 @@ from flask_cors import CORS
 import os
 
 # Database setup
-# On Vercel, only /tmp is writable, so use that for the database
+# On Vercel and other serverless platforms, only /tmp is writable
 DB_FILE = os.getenv('DATABASE_URL', 'sqlite:///linguist_assist.db').replace('sqlite:///', '')
 if DB_FILE.startswith('/'):
     DB_PATH = DB_FILE
-elif os.getenv('VERCEL'):
+elif os.getenv('VERCEL') or os.getenv('VERCEL_ENV') or os.getenv('NOW_REGION'):
     # Vercel: use /tmp (only writable location)
-    DB_PATH = os.path.join('/tmp', DB_FILE)
+    DB_PATH = os.path.join('/tmp', os.path.basename(DB_FILE))
 else:
-    # For other cloud platforms, use a persistent directory
-    DB_PATH = os.path.join(os.getenv('HOME', '/tmp'), DB_FILE)
+    # For other cloud platforms, try /tmp first (serverless-friendly)
+    # Fall back to HOME if /tmp doesn't work
+    DB_PATH = os.path.join('/tmp', os.path.basename(DB_FILE))
 
-# Ensure directory exists
+# Ensure directory exists (for /tmp, directory is always writable)
 try:
     db_dir = os.path.dirname(DB_PATH) if os.path.dirname(DB_PATH) else '.'
-    if db_dir != '.':
+    if db_dir and db_dir != '.':
         os.makedirs(db_dir, exist_ok=True)
 except Exception as e:
-    # If directory creation fails, use /tmp as fallback
+    # If directory creation fails, use /tmp directly
     print(f"Warning: Could not create database directory {db_dir}: {e}")
     DB_PATH = os.path.join('/tmp', os.path.basename(DB_FILE))
 
