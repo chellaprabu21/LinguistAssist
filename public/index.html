@@ -436,7 +436,7 @@
                 <span>🤖</span>
                 LinguistAssist Admin Dashboard
             </h1>
-            <div class="subtitle">Manage automation tasks across multiple devices</div>
+            <div class="subtitle">Manage automation tasks</div>
         </header>
 
         <div class="stats">
@@ -462,12 +462,6 @@
             <div class="card">
                 <h2>📝 Submit New Task</h2>
                 <form id="task-form">
-                    <div class="form-group">
-                        <label for="device-select">Device</label>
-                        <select id="device-select" style="width: 100%; padding: 12px; background: var(--bg-light); border: 1px solid var(--border); border-radius: 8px; color: var(--text); font-size: 1rem; font-family: inherit; cursor: pointer;">
-                            <option value="">Any Available Device</option>
-                        </select>
-                    </div>
                     <div class="form-group">
                         <label for="goal">Task Goal</label>
                         <textarea id="goal" placeholder="e.g., Open Notes app and create a new note" required></textarea>
@@ -530,8 +524,6 @@
         let selectedTaskId = null;
         let refreshInterval = null;
         let logsInterval = null;
-        let devices = [];
-
         // Initialize
         if (!API_KEY) {
             const key = prompt('Enter your API key:');
@@ -540,9 +532,6 @@
                 location.reload();
             }
         }
-        
-        // Load devices
-        loadDevices();
 
         // API helpers
         async function apiCall(endpoint, options = {}) {
@@ -584,10 +573,9 @@
             submitBtn.innerHTML = '<span class="loading"></span> Submitting...';
             
             try {
-                const deviceId = document.getElementById('device-select').value || null;
                 const result = await apiCall('/tasks', {
                     method: 'POST',
-                    body: JSON.stringify({ goal, max_steps: maxSteps, device_id: deviceId })
+                    body: JSON.stringify({ goal, max_steps: maxSteps })
                 });
                 
                 showNotification(`Task submitted: ${result.task_id}`, 'success');
@@ -640,57 +628,86 @@
             }
         }
 
-        // Render tasks
+        // Render tasks with smooth updates
+        let currentTasks = new Map();
+        
         function renderTasks(tasks) {
             const container = document.getElementById('tasks-list');
             
             if (tasks.length === 0) {
                 container.innerHTML = '<div class="empty-state"><div>📭</div><div>No tasks found</div></div>';
+                currentTasks.clear();
                 return;
             }
             
-            container.innerHTML = tasks.map(task => {
+            // Create a map of new tasks
+            const newTasks = new Map();
+            tasks.forEach(task => {
+                newTasks.set(task.id, task);
+            });
+            
+            // Remove tasks that are no longer in the list
+            currentTasks.forEach((task, taskId) => {
+                if (!newTasks.has(taskId)) {
+                    const element = document.getElementById(`task-${taskId}`);
+                    if (element) {
+                        element.style.transition = 'opacity 0.3s, transform 0.3s';
+                        element.style.opacity = '0';
+                        element.style.transform = 'translateX(-20px)';
+                        setTimeout(() => element.remove(), 300);
+                    }
+                }
+            });
+            
+            // Update or add tasks
+            tasks.forEach(task => {
                 const status = task.status || 'queued';
                 const goal = task.goal || 'No goal specified';
                 const taskId = task.id || 'unknown';
                 const timestamp = task.timestamp ? new Date(task.timestamp * 1000).toLocaleString() : 'Unknown';
                 
-                return `
-                    <div class="task-item ${status}" onclick="showTaskDetails('${taskId}')">
-                        <div class="task-header">
-                            <div class="task-id">${taskId.substring(0, 8)}...</div>
-                            <div class="task-status ${status}">${status}</div>
-                        </div>
-                        <div class="task-goal">${goal}</div>
-                        <div class="task-meta">
-                            <span>Max Steps: ${task.max_steps || 20}</span>
-                            <span>Device: ${task.device_id ? task.device_id.substring(0, 12) + '...' : 'Any'}</span>
-                            <span>Created: ${timestamp}</span>
-                        </div>
+                let element = document.getElementById(`task-${taskId}`);
+                const taskHtml = `
+                    <div class="task-header">
+                        <div class="task-id">${taskId.substring(0, 8)}...</div>
+                        <div class="task-status ${status}">${status}</div>
+                    </div>
+                    <div class="task-goal">${goal}</div>
+                    <div class="task-meta">
+                        <span>Max Steps: ${task.max_steps || 20}</span>
+                        <span>Created: ${timestamp}</span>
                     </div>
                 `;
-            }).join('');
+                
+                if (element) {
+                    // Update existing task smoothly
+                    const oldStatus = element.className.match(/task-item (\w+)/)?.[1];
+                    if (oldStatus !== status) {
+                        element.className = `task-item ${status}`;
+                    }
+                    element.innerHTML = taskHtml;
+                } else {
+                    // Add new task with animation
+                    element = document.createElement('div');
+                    element.id = `task-${taskId}`;
+                    element.className = `task-item ${status}`;
+                    element.onclick = () => showTaskDetails(taskId);
+                    element.innerHTML = taskHtml;
+                    element.style.opacity = '0';
+                    element.style.transform = 'translateY(-10px)';
+                    container.appendChild(element);
+                    // Animate in
+                    setTimeout(() => {
+                        element.style.transition = 'opacity 0.3s, transform 0.3s';
+                        element.style.opacity = '1';
+                        element.style.transform = 'translateY(0)';
+                    }, 10);
+                }
+            });
+            
+            currentTasks = newTasks;
         }
 
-        // Load devices
-        async function loadDevices() {
-            try {
-                const data = await apiCall('/devices');
-                devices = data.devices || [];
-                
-                const select = document.getElementById('device-select');
-                select.innerHTML = '<option value="">Any Available Device</option>';
-                devices.forEach(device => {
-                    const option = document.createElement('option');
-                    option.value = device.id;
-                    option.textContent = `${device.name} (${device.status})`;
-                    select.appendChild(option);
-                });
-            } catch (error) {
-                console.error('Failed to load devices:', error);
-            }
-        }
-        
         // Clear tasks
         async function clearTasks() {
             const status = currentFilter === 'all' ? 'all' : currentFilter;
@@ -771,9 +788,6 @@
                             <strong>Max Steps:</strong> ${task.max_steps}
                         </div>
                         <div style="margin-bottom: 10px;">
-                            <strong>Device:</strong> ${task.device_id || 'Any Available'}
-                        </div>
-                        <div style="margin-bottom: 10px;">
                             <strong>Created:</strong> ${new Date(task.timestamp * 1000).toLocaleString()}
                         </div>
                     </div>
@@ -828,10 +842,8 @@
 
         // Auto-refresh
         loadTasks();
-        loadDevices();
         refreshInterval = setInterval(() => {
             loadTasks();
-            loadDevices();
         }, 5000);
 
         // Make functions global
