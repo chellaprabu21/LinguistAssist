@@ -14,5 +14,5 @@ from linguist_assist_api_cloud import app, init_database
 init_database()
 
 # Export the Flask app for Vercel's Python runtime
-# Vercel requires the handler to be exported as 'handler'
+# Vercel requires the handler to be exported
 handler = app

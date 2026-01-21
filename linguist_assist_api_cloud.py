@@ -25,8 +25,8 @@ DB_FILE = os.getenv('DATABASE_URL', 'sqlite:///linguist_assist.db').replace('sql
 if DB_FILE.startswith('/'):
     DB_PATH = DB_FILE
 else:
-    # For cloud platforms, use /tmp (writable on Vercel and most serverless platforms)
-    DB_PATH = os.path.join('/tmp', DB_FILE)
+    # For cloud platforms, use a persistent directory
+    DB_PATH = os.path.join(os.getenv('HOME', '/tmp'), DB_FILE)
 
 # Ensure directory exists
 os.makedirs(os.path.dirname(DB_PATH) if os.path.dirname(DB_PATH) else '.', exist_ok=True)
