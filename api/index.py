@@ -27,7 +27,7 @@ try:
             app._db_initialized = True
     
     # Export the Flask app as 'handler' for Vercel's Python runtime
-    # Vercel expects the handler function to be named 'handler'
+    # Vercel expects the handler to be the Flask WSGI app directly
     handler = app
     
 except Exception as e:
