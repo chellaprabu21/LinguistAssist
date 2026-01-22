@@ -413,6 +413,62 @@ class LinguistAssistService:
             logger.info(f"Executing goal: {goal} (max_steps: {max_steps})")
             self.send_log(task_id, "INFO", f"Starting task execution: {goal}")
             
+            # Create a custom stdout/stderr capture that sends to API
+            import io
+            
+            class APILogStream:
+                def __init__(self, service, task_id, original_stream):
+                    self.service = service
+                    self.task_id = task_id
+                    self.original_stream = original_stream
+                    self.buffer = ""
+                
+                def write(self, s):
+                    # Write to original stream (so it still appears in logs)
+                    self.original_stream.write(s)
+                    self.original_stream.flush()
+                    
+                    # Buffer and send complete lines to API
+                    self.buffer += s
+                    while '\n' in self.buffer:
+                        line, self.buffer = self.buffer.split('\n', 1)
+                        line = line.strip()
+                        if line:  # Only send non-empty lines
+                            try:
+                                # Determine log level from content
+                                level = "INFO"
+                                line_lower = line.lower()
+                                if "error" in line_lower or "failed" in line_lower:
+                                    level = "ERROR"
+                                elif "warning" in line_lower:
+                                    level = "WARNING"
+                                elif "step" in line_lower or "executing" in line_lower or "click" in line_lower or "goal" in line_lower:
+                                    level = "INFO"
+                                
+                                # Send log to API
+                                self.service.send_log(self.task_id, level, line)
+                            except:
+                                pass  # Don't break execution if logging fails
+                    
+                    return len(s)
+                
+                def flush(self):
+                    self.original_stream.flush()
+                    # Send any remaining buffer content
+                    if self.buffer.strip():
+                        try:
+                            line = self.buffer.strip()
+                            level = "INFO"
+                            line_lower = line.lower()
+                            if "error" in line_lower or "failed" in line_lower:
+                                level = "ERROR"
+                            elif "warning" in line_lower:
+                                level = "WARNING"
+                            self.service.send_log(self.task_id, level, line)
+                            self.buffer = ""
+                        except:
+                            pass
+            
             # Create a custom logger that sends to API
             import logging
             class APILogHandler(logging.Handler):
@@ -434,9 +490,22 @@ class LinguistAssistService:
             api_handler.setLevel(logging.INFO)
             logger.addHandler(api_handler)
             
+            # Capture stdout/stderr and redirect to API
+            original_stdout = sys.stdout
+            original_stderr = sys.stderr
+            
             try:
+                # Redirect stdout and stderr to capture print statements
+                api_stdout = APILogStream(self, task_id, original_stdout)
+                api_stderr = APILogStream(self, task_id, original_stderr)
+                sys.stdout = api_stdout
+                sys.stderr = api_stderr
+                
                 success = self.agent.execute_task(goal, max_steps=max_steps)
             finally:
+                # Restore original streams
+                sys.stdout = original_stdout
+                sys.stderr = original_stderr
                 logger.removeHandler(api_handler)
             
             result = {

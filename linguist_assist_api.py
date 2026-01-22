@@ -39,7 +39,7 @@ DEFAULT_CONFIG = {
     "allowed_ips": []
 }
 
-app = Flask(__name__)
+app = Flask(__name__, static_folder='public', static_url_path='')
 CORS(app)  # Enable CORS for cross-origin requests
 
 # Rate limiting storage (simple in-memory)
@@ -142,6 +142,17 @@ def require_api_key(f):
         return f(*args, **kwargs)
     return decorated_function
 
+
+@app.route('/')
+def index():
+    """Serve the admin dashboard."""
+    try:
+        return app.send_static_file('index.html')
+    except:
+        return jsonify({
+            "error": "Dashboard not found",
+            "message": "Make sure index.html exists in the public directory"
+        }), 404
 
 @app.route('/api/v1/health', methods=['GET'])
 def health_check():
@@ -371,6 +382,301 @@ def cancel_task(task_id: str):
             "error": "Internal server error",
             "message": str(e)
         }), 500
+
+
+@app.route('/api/v1/tasks/clear', methods=['DELETE'])
+@require_api_key
+def clear_tasks():
+    """Clear tasks by status."""
+    try:
+        status_filter = request.args.get('status', 'all')
+        deleted_count = 0
+        
+        if status_filter == 'all':
+            # Delete all tasks from all directories
+            # Queue
+            for task_file in QUEUE_DIR.glob("*.json"):
+                task_file.unlink()
+                deleted_count += 1
+            
+            # Processing
+            for task_file in PROCESSING_DIR.glob("*.json"):
+                task_file.unlink()
+                deleted_count += 1
+            
+            # Completed/Failed
+            for result_file in COMPLETED_DIR.glob("*_result.json"):
+                result_file.unlink()
+                deleted_count += 1
+            for task_file in COMPLETED_DIR.glob("*.json"):
+                if not task_file.name.endswith("_result.json"):
+                    task_file.unlink()
+                    deleted_count += 1
+        else:
+            # Delete by specific status
+            if status_filter == 'queued':
+                for task_file in QUEUE_DIR.glob("*.json"):
+                    task_file.unlink()
+                    deleted_count += 1
+            elif status_filter == 'processing':
+                for task_file in PROCESSING_DIR.glob("*.json"):
+                    task_file.unlink()
+                    deleted_count += 1
+            elif status_filter in ['completed', 'failed', 'error']:
+                for result_file in COMPLETED_DIR.glob("*_result.json"):
+                    try:
+                        with open(result_file, 'r') as f:
+                            result = json.load(f)
+                        if result.get('status') == status_filter:
+                            result_file.unlink()
+                            deleted_count += 1
+                            # Also delete the task file if it exists
+                            task_id = result.get('id', result_file.stem.replace('_result', ''))
+                            task_file = COMPLETED_DIR / f"{task_id}.json"
+                            if task_file.exists():
+                                task_file.unlink()
+                    except:
+                        pass
+        
+        return jsonify({
+            "deleted_count": deleted_count,
+            "status": status_filter,
+            "message": f"Cleared {deleted_count} tasks"
+        }), 200
+        
+    except Exception as e:
+        return jsonify({
+            "error": "Internal server error",
+            "message": str(e)
+        }), 500
+
+
+@app.route('/api/v1/tasks/claim', methods=['POST'])
+@require_api_key
+def claim_task():
+    """Atomically claim a queued task for processing (file-based version)."""
+    try:
+        data = request.get_json() or {}
+        device_id = data.get('device_id')  # Optional, for compatibility
+        
+        # Find oldest queued task
+        task_files = sorted(QUEUE_DIR.glob("*.json"), key=lambda p: p.stat().st_mtime)
+        
+        if not task_files:
+            return jsonify({
+                "message": "No tasks available",
+                "task": None
+            }), 200
+        
+        # Try to claim the first task by moving it to processing
+        task_file = task_files[0]
+        try:
+            # Load task
+            with open(task_file, 'r') as f:
+                task = json.load(f)
+            
+            # Move to processing directory (atomic operation)
+            processing_file = PROCESSING_DIR / task_file.name
+            task_file.rename(processing_file)
+            
+            # Update task with processing status
+            task['status'] = 'processing'
+            if device_id:
+                task['device_id'] = device_id
+            
+            # Save updated task to processing
+            with open(processing_file, 'w') as f:
+                json.dump(task, f, indent=2)
+            
+            return jsonify({
+                "message": "Task claimed successfully",
+                "task": {
+                    "id": task.get("id", task_file.stem),
+                    "goal": task.get("goal"),
+                    "max_steps": task.get("max_steps", 20),
+                    "status": "processing",
+                    "timestamp": task.get("timestamp", time.time()),
+                    "device_id": task.get("device_id")
+                }
+            }), 200
+            
+        except (OSError, json.JSONDecodeError) as e:
+            # File was already claimed or corrupted
+            return jsonify({
+                "message": "Task already claimed by another device",
+                "task": None
+            }), 200
+        
+    except Exception as e:
+        return jsonify({
+            "error": "Internal server error",
+            "message": str(e)
+        }), 500
+
+
+@app.route('/api/v1/tasks/<task_id>/result', methods=['PUT'])
+@require_api_key
+def update_task_result(task_id: str):
+    """Update task result (for worker service to call)."""
+    try:
+        data = request.get_json()
+        if not data:
+            return jsonify({"error": "JSON body required"}), 400
+        
+        status = data.get('status', 'completed')
+        result = data.get('result', {})
+        
+        # Check processing directory first
+        processing_file = PROCESSING_DIR / f"{task_id}.json"
+        result_file = PROCESSING_DIR / f"{task_id}_result.json"
+        
+        if not processing_file.exists():
+            # Check if already completed
+            completed_file = COMPLETED_DIR / f"{task_id}.json"
+            if completed_file.exists():
+                return jsonify({
+                    "task_id": task_id,
+                    "status": status,
+                    "message": "Task already completed"
+                }), 200
+            else:
+                return jsonify({
+                    "error": "Task not found",
+                    "task_id": task_id
+                }), 404
+        
+        # Save result
+        result_data = {
+            "id": task_id,
+            "status": status,
+            "result": result,
+            "timestamp": time.time()
+        }
+        
+        with open(result_file, 'w') as f:
+            json.dump(result_data, f, indent=2)
+        
+        # Move to completed if done
+        if status in ['completed', 'failed', 'error']:
+            completed_file = COMPLETED_DIR / f"{task_id}.json"
+            processing_file.rename(completed_file)
+            result_file.rename(COMPLETED_DIR / f"{task_id}_result.json")
+        
+        return jsonify({
+            "task_id": task_id,
+            "status": status,
+            "message": "Task result updated"
+        }), 200
+        
+    except Exception as e:
+        return jsonify({
+            "error": "Internal server error",
+            "message": str(e)
+        }), 500
+
+
+# Task logs storage (in-memory for local API)
+task_logs_store = {}
+
+@app.route('/api/v1/tasks/<task_id>/logs', methods=['GET'])
+@require_api_key
+def get_task_logs(task_id: str):
+    """Get logs for a specific task."""
+    try:
+        limit = request.args.get('limit', type=int) or 2000
+        
+        logs = task_logs_store.get(task_id, [])
+        
+        # Sort by timestamp (oldest first)
+        logs.sort(key=lambda x: x.get('timestamp', 0))
+        
+        # Limit results
+        logs = logs[-limit:] if limit else logs
+        
+        return jsonify({
+            "task_id": task_id,
+            "logs": logs,
+            "count": len(logs)
+        }), 200
+        
+    except Exception as e:
+        return jsonify({
+            "error": "Internal server error",
+            "message": str(e)
+        }), 500
+
+
+@app.route('/api/v1/tasks/<task_id>/logs', methods=['POST'])
+@require_api_key
+def add_task_log(task_id: str):
+    """Add a log entry for a task (called by service)."""
+    try:
+        data = request.get_json()
+        
+        if not data:
+            return jsonify({
+                "error": "Invalid request",
+                "message": "JSON body required"
+            }), 400
+        
+        level = data.get('level', 'INFO')
+        message = data.get('message', '')
+        
+        if task_id not in task_logs_store:
+            task_logs_store[task_id] = []
+        
+        log_entry = {
+            "timestamp": time.time(),
+            "level": level,
+            "message": message
+        }
+        
+        task_logs_store[task_id].append(log_entry)
+        
+        # Keep only last 5000 logs per task
+        if len(task_logs_store[task_id]) > 5000:
+            task_logs_store[task_id] = task_logs_store[task_id][-5000:]
+        
+        return jsonify({
+            "task_id": task_id,
+            "message": "Log added successfully"
+        }), 201
+        
+    except Exception as e:
+        return jsonify({
+            "error": "Internal server error",
+            "message": str(e)
+        }), 500
+
+
+# Device endpoints (simplified, for compatibility)
+@app.route('/api/v1/devices', methods=['POST'])
+@require_api_key
+def register_device():
+    """Register a device (simplified for local mode)."""
+    try:
+        data = request.get_json() or {}
+        device_id = data.get('id', 'local-device')
+        
+        return jsonify({
+            "device_id": device_id,
+            "message": "Device registered successfully"
+        }), 200
+    except Exception as e:
+        return jsonify({
+            "error": "Internal server error",
+            "message": str(e)
+        }), 500
+
+
+@app.route('/api/v1/devices/<device_id>/heartbeat', methods=['POST'])
+@require_api_key
+def device_heartbeat(device_id: str):
+    """Update device heartbeat (simplified for local mode)."""
+    return jsonify({
+        "device_id": device_id,
+        "message": "Heartbeat received"
+    }), 200
 
 
 def main():

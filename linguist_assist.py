@@ -63,24 +63,27 @@ class CoordinateMapper:
         if screenshot_height is None:
             screenshot_height = self.logical_height
         
-        # Convert normalized coordinates to screenshot pixel coordinates
+        # Convert normalized coordinates (0-1000, relative to screenshot) to logical screen coordinates
+        # Normalized coordinates are based on screenshot dimensions, so we need to:
+        # 1. Convert to screenshot pixel coordinates
+        # 2. Scale down to logical coordinates (accounting for Retina/display scaling)
         screenshot_x = (normalized_x / 1000.0) * screenshot_width
         screenshot_y = (normalized_y / 1000.0) * screenshot_height
         
-        # Calculate scale factor (screenshot is usually 2x on Retina displays)
+        # Calculate scale factors (screenshot is usually 2x on Retina displays)
         scale_x = screenshot_width / self.logical_width if self.logical_width > 0 else 1.0
         scale_y = screenshot_height / self.logical_height if self.logical_height > 0 else 1.0
         
         # Convert from screenshot (physical) coordinates to logical screen coordinates
         # pyautogui.click() expects LOGICAL coordinates, not physical pixel coordinates!
-        pixel_x = int(screenshot_x / scale_x)
-        pixel_y = int(screenshot_y / scale_y)
+        pixel_x = round(screenshot_x / scale_x)
+        pixel_y = round(screenshot_y / scale_y)
         
         # Ensure coordinates are within logical screen bounds
         pixel_x = max(0, min(pixel_x, self.logical_width - 1))
         pixel_y = max(0, min(pixel_y, self.logical_height - 1))
         
-        print(f"[CoordinateMapper] Mapped ({normalized_x:.1f}, {normalized_y:.1f}) -> screenshot ({screenshot_x:.1f}, {screenshot_y:.1f}) -> logical ({pixel_x}, {pixel_y}) [scale: {scale_x:.2f}x]")
+        print(f"[CoordinateMapper] Mapped ({normalized_x:.1f}, {normalized_y:.1f}) -> screenshot ({screenshot_x:.1f}, {screenshot_y:.1f}) -> logical ({pixel_x}, {pixel_y}) [scale: {scale_x:.2f}x, {scale_y:.2f}x]")
         
         return (pixel_x, pixel_y)
 
@@ -91,6 +94,12 @@ class LinguistAssist:
     SYSTEM_INSTRUCTION = (
         "You are a GUI automation agent. When given a task and a screenshot, "
         "identify the center point of the UI element required to fulfill the task. "
+        "CRITICAL: Ignore the mouse cursor position - do NOT return coordinates where the cursor is. "
+        "Focus on the actual UI element (button, icon, text field) that needs to be clicked, NOT the cursor location. "
+        "PRECISION IS ESSENTIAL: When multiple similar elements are close together (like dock icons or menu items), "
+        "identify the CORRECT element by its visual characteristics: text content, color, shape, icon design, or other distinguishing features. "
+        "Do NOT rely solely on approximate position - use visual identifiers to ensure you select the right element. "
+        "For dock icons and similar grouped elements, identify the EXACT CENTER of the CORRECT icon/element, not adjacent ones. "
         "Return ONLY valid JSON format: {\"point\": [y, x]}. "
         "The coordinates must be normalized to a 0-1000 scale where: "
         "- x=0 is the left edge, x=1000 is the right edge "
@@ -108,7 +117,14 @@ class LinguistAssist:
         "Return JSON format: {'complete': true/false, 'action_type': 'click'|'type'|'press_key', 'action': 'description of what you're doing', 'point': [y, x] if click/type needs coordinates, 'text': 'text to type' if type action, 'key': 'key name' if press_key}. "
         "If complete is true, other fields can be omitted. The coordinates must be normalized to a 0-1000 scale. "
         "IMPORTANT: Set 'complete': true if the goal is achieved. For 'open app' goals, if you see the app window open, the app menu bar appears, or the app is clearly visible and active on screen, the goal is complete. "
-        "CRITICAL: When clicking dock icons or app launchers, aim for the CENTER of the icon, not the edges. Dock icons are typically 60-80 pixels wide, so target the middle. "
+        "CRITICAL: When clicking icons, buttons, or UI elements that are positioned close together, aim for the EXACT CENTER of the CORRECT element. "
+        "PRECISION IS ESSENTIAL: When multiple similar elements are adjacent (like dock icons, menu items, or toolbar buttons), "
+        "identify the CORRECT element by its visual characteristics: text content, color, shape, icon design, symbols, or other distinguishing features. "
+        "Do NOT rely solely on approximate position - use visual identifiers to ensure you select the right element. "
+        "For dock icons: they are typically 60-80 pixels wide and positioned very close together, so identify by visual features (text, color, icon design) not just position. "
+        "IGNORE the cursor position completely - identify the actual icon/button location, not where the cursor is pointing. "
+        "If you see a cursor or pointer in the screenshot, do NOT use its coordinates - find the actual UI element instead. "
+        "Always verify you're selecting the correct element by matching visual characteristics mentioned in the task, not just clicking near the described location. "
         "If you've clicked the same element multiple times without progress, STOP and set 'complete': true if the app is already open, or try a different approach (like using Spotlight search). "
         "IMPORTANT: Break down complex tasks into individual steps. For 'send message to X': "
         "(1) First step: click on the contact in the DM list (ONLY if their conversation is not already open), "
@@ -348,9 +364,18 @@ class LinguistAssist:
         max_retries = 2
         for attempt in range(max_retries):
             try:
-                # Send image and task to Gemini
+                # Send image and task to Gemini with explicit warnings
+                task_with_warning = (
+                    f"{task}\n\n"
+                    "IMPORTANT: Ignore any mouse cursor visible in the screenshot. "
+                    "Identify the actual UI element (icon, button, etc.), NOT the cursor position. "
+                    "PRECISION IS ESSENTIAL: When multiple similar elements are close together, "
+                    "identify the CORRECT element by its visual characteristics (text, color, shape, icon design), "
+                    "not just approximate position. Use visual identifiers to ensure accuracy. "
+                    "For grouped elements like dock icons, find the EXACT CENTER of the CORRECT icon/element, not adjacent ones."
+                )
                 response = self.model.generate_content([
-                    f"Task: {task}",
+                    task_with_warning,
                     screenshot
                 ])
                 
@@ -492,7 +517,13 @@ class LinguistAssist:
                     planning_prompt += "Look for visual indicators that the task succeeded (e.g., app window open, button clicked, etc.). "
                     planning_prompt += "If the goal appears achieved, set 'complete': true immediately.\n\n"
                 
-                planning_prompt += "Analyze the current screen state and determine the next action."
+                planning_prompt += "Analyze the current screen state and determine the next action.\n\n"
+                planning_prompt += "CRITICAL: When providing coordinates in the 'point' field, ignore any mouse cursor visible in the screenshot. "
+                planning_prompt += "Identify the actual UI element (icon, button, text field) that needs to be clicked, NOT the cursor position. "
+                planning_prompt += "PRECISION IS ESSENTIAL: When multiple similar elements are close together, identify the CORRECT element by its visual characteristics "
+                planning_prompt += "(text content, color, shape, icon design, symbols, or other distinguishing features), not just approximate position. "
+                planning_prompt += "For grouped elements like dock icons or menu items, find the EXACT CENTER of the CORRECT icon/element, not adjacent ones. "
+                planning_prompt += "Always verify you're selecting the correct element by matching visual characteristics mentioned in the task."
                 
                 response = self.planning_model.generate_content([
                     planning_prompt,
@@ -744,6 +775,37 @@ class LinguistAssist:
                                 print(f"[LinguistAssist] Warning: Detected potential loop - same action repeated")
                                 print(f"[LinguistAssist] Recent actions: {recent_actions[-3:]}")
                                 
+                                # If we've repeated the same action 2+ times, try alternative approach
+                                if len(recent_actions) >= 2:
+                                    last_two_actions = [a.lower() for a in recent_actions[-2:]]
+                                    if len(set(last_two_actions)) == 1:  # Last two identical
+                                        # Try using Spotlight search as fallback for app launches
+                                        if any(keyword in action.lower() for keyword in ['app', 'application', 'open', 'launch']):
+                                            print(f"[LinguistAssist] Trying alternative: Using Spotlight search instead of clicking dock icon")
+                                            try:
+                                                # Press Cmd+Space to open Spotlight
+                                                pyautogui.hotkey('command', 'space')
+                                                time.sleep(1.0)
+                                                
+                                                # Extract app name from action
+                                                app_name = goal.split()[-1] if 'app' in goal.lower() else 'Calendar'
+                                                if 'calendar' in action.lower() or 'calender' in action.lower():
+                                                    app_name = 'Calendar'
+                                                
+                                                # Type app name
+                                                pyautogui.write(app_name, interval=0.1)
+                                                time.sleep(0.5)
+                                                
+                                                # Press Enter to launch
+                                                pyautogui.press('enter')
+                                                time.sleep(2.0)
+                                                
+                                                print(f"[LinguistAssist] Attempted to launch {app_name} via Spotlight search")
+                                                # Continue to next iteration to verify
+                                                continue
+                                            except Exception as e:
+                                                print(f"[LinguistAssist] Spotlight search failed: {e}")
+                                
                                 # If we've repeated the same action 3+ times, fail faster
                                 if len(recent_actions) >= 3:
                                     last_three_actions = [a.lower() for a in recent_actions[-3:]]
@@ -864,7 +926,21 @@ class LinguistAssist:
                             is_app_launch = any(keyword in action.lower() for keyword in ['app', 'application', 'icon', 'dock', 'launch', 'open'])
                             if is_app_launch:
                                 print(f"[LinguistAssist] Detected app launch action, waiting longer for app to open...")
-                                time.sleep(2.5)  # Extra time for app to launch
+                                time.sleep(3.0)  # Extra time for app to launch
+                                
+                                # Take a quick screenshot to verify if app opened
+                                try:
+                                    import requests
+                                    verify_response = requests.post(
+                                        "http://127.0.0.1:8081/screenshot",
+                                        timeout=3
+                                    )
+                                    if verify_response.status_code == 200:
+                                        verify_data = verify_response.json()
+                                        # The next planning step will verify if app opened
+                                        print(f"[LinguistAssist] Screenshot captured for verification after app launch")
+                                except Exception as e:
+                                    print(f"[LinguistAssist] Could not verify app launch: {e}")
                             
                             # Delay to allow UI to update and verify action took effect
                             time.sleep(2.0)  # Standard delay for UI to update and verify
